@@ -1,0 +1,6 @@
+[submodule "external/EAT"]
+	path = external/EAT
+	url = git@github.com:cwx-worst-one/EAT.git
+[submodule "external/emotion2vec"]
+	path = external/emotion2vec
+	url = git@github.com:ddlBoJack/emotion2vec.git
