@@ -1,0 +1,27 @@
+# Python / virtualenv
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# Editors / OS
+.DS_Store
+*.swp
+*.swo
+
+# Checkpoints, logs, artifacts
+checkpoints/
+outputs/
+runs/
+wandb/
+
+# Local data and manifests
+datasets/
+*.tsv
+*.npy
+*.lengths
+*.emo
+
+# Generated configs / temp files
+pretrain_eat_em2v_style_args.yaml
+*.tmp
