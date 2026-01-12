@@ -9,16 +9,16 @@ if [ ! -f "${ENV_FILE}" ]; then
   exit 1
 fi
 
-# shellcheck disable=SC1090
-source "${ENV_FILE}"
-
 # If DATA_ROOT is not set, infer it from repo location
 if [ -z "${DATA_ROOT:-}" ]; then
-  REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   DATA_ROOT="$(dirname "${REPO_DIR}")"
   export DATA_ROOT
   echo "[INFO] DATA_ROOT not set; inferred as ${DATA_ROOT}"
 fi
+
+# shellcheck disable=SC1090
+source "${ENV_FILE}"
 
 pip install --no-cache-dir wandb fairseq soundfile torchaudio
 git submodule update --init --recursive
