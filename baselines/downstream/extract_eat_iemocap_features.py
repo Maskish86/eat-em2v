@@ -17,6 +17,7 @@ from typing import List, Tuple
 import numpy as np
 import soundfile as sf
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
 from torch.utils.data import DataLoader, Dataset
@@ -64,7 +65,7 @@ def load_iemocap_root(root_dir: str) -> Tuple[List[str], List[str], List[str]]:
         if not eval_dir.exists():
             raise FileNotFoundError(f"Missing EmoEvaluation directory: {eval_dir}")
         for eval_path in sorted(eval_dir.glob("*.txt")):
-            with open(eval_path) as ef:
+            with open(eval_path, encoding="utf-8", errors="ignore") as ef:
                 for line in ef:
                     line = line.strip()
                     if not line:
@@ -206,10 +207,15 @@ def _interpolate_pos_embed(model, checkpoint_model):
 
 
 def _load_eat_pretrained(checkpoint, target_length=None):
-    state = fairseq.checkpoint_utils.load_checkpoint_to_cpu(checkpoint, {})
+    state = torch.load(checkpoint, map_location="cpu")
+    if state.get("args") is not None:
+        # Upgrade legacy fairseq checkpoints that carry args (0.10.x style).
+        state = fairseq.checkpoint_utils._upgrade_state_dict(state)
     pretrained_args = state.get("cfg") or state.get("args")
     if pretrained_args is None:
         raise ValueError("Checkpoint missing cfg/args; use backbone_type 'eat_em2v' for non-fairseq .pt files.")
+    if isinstance(pretrained_args, dict):
+        pretrained_args = OmegaConf.create(pretrained_args)
 
     if hasattr(pretrained_args, "criterion"):
         pretrained_args.criterion = None
@@ -234,8 +240,16 @@ def _load_eat_pretrained(checkpoint, target_length=None):
             if "mae_masking" in model_cfg["modalities"]["image"]:
                 del model_cfg["modalities"]["image"]["mae_masking"]
 
-    task = fairseq.tasks.setup_task(pretrained_args.task)
-    model = task.build_model(pretrained_args.model, from_checkpoint=True)
+    if OmegaConf.is_config(pretrained_args):
+        task = fairseq.tasks.setup_task(pretrained_args.task)
+        build_cfg = pretrained_args.model
+    else:
+        task = fairseq.tasks.setup_task(pretrained_args)
+        build_cfg = pretrained_args
+    try:
+        model = task.build_model(build_cfg, from_checkpoint=True)
+    except TypeError:
+        model = task.build_model(build_cfg)
 
     checkpoint_model = state.get("model", state)
     _interpolate_pos_embed(model, checkpoint_model)
@@ -252,8 +266,51 @@ def _load_eat_pretrained(checkpoint, target_length=None):
     return model
 
 
+def _ensure_samepad2d():
+    try:
+        from fairseq import modules as fairseq_modules
+    except Exception:
+        return
+    if hasattr(fairseq_modules, "SamePad2d"):
+        return
+
+    class SamePad2d(nn.Module):
+        """
+        Replacement for fairseq.modules.SamePad2d (removed in fairseq 0.12).
+        Implements TensorFlow-style 'same' padding for Conv2d.
+        """
+
+        def __init__(self, kernel_size, stride=1, dilation=1):
+            super().__init__()
+            if isinstance(kernel_size, int):
+                kernel_size = (kernel_size, kernel_size)
+            self.kernel_size = kernel_size
+            self.stride = stride
+            self.dilation = dilation
+
+        def forward(self, x):
+            ih, iw = x.size()[-2:]
+            kh, kw = self.kernel_size
+
+            oh = (ih + self.stride - 1) // self.stride
+            ow = (iw + self.stride - 1) // self.stride
+
+            pad_h = max((oh - 1) * self.stride + (kh - 1) * self.dilation + 1 - ih, 0)
+            pad_w = max((ow - 1) * self.stride + (kw - 1) * self.dilation + 1 - iw, 0)
+
+            pad_top = pad_h // 2
+            pad_bottom = pad_h - pad_top
+            pad_left = pad_w // 2
+            pad_right = pad_w - pad_left
+
+            return F.pad(x, (pad_left, pad_right, pad_top, pad_bottom))
+
+    fairseq_modules.SamePad2d = SamePad2d
+
+
 def load_eat(checkpoint, device, backbone_type="eat_original", freeze_cnn=False, target_length=None):
     # Register EAT modules so custom tasks/models are available.
+    _ensure_samepad2d()
     fairseq_utils.import_user_module(argparse.Namespace(user_dir="external/EAT"))
 
     if backbone_type == "eat_original":
