@@ -90,13 +90,17 @@ def train_and_eval(args):
 
     wb_run = None
     if args.wandb_project:
-        wb_run = wandb.init(
-            project=args.wandb_project,
-            name=args.wandb_name or "iemocap-downstream",
-            group=args.wandb_group or None,
-            job_type="downstream_eval",
-            config=vars(args),
-        )
+        try:
+            wb_run = wandb.init(
+                project=args.wandb_project,
+                name=args.wandb_name or "iemocap-downstream",
+                group=args.wandb_group or None,
+                job_type="downstream_eval",
+                config=vars(args),
+            )
+        except wandb.errors.CommError as exc:
+            print(f"W&B init failed ({exc}); continuing without W&B logging.")
+            wb_run = None
 
     for fold, (test_start, test_end) in enumerate(splits, 1):
         train_loader, val_loader, test_loader = emo_data.train_valid_test_iemocap_dataloader(

@@ -20,10 +20,10 @@ fi
 # shellcheck disable=SC1090
 source "${ENV_FILE}"
 
-pip install --no-cache-dir wandb fairseq soundfile torchaudio h5py tensorboardX scikit_learn timm
-git submodule update --init --recursive
+pip install --no-cache-dir wandb fairseq==0.11.2 soundfile torchaudio h5py tensorboardX scikit_learn timm
 
 cd "${DATA_ROOT}"/eat-em2v
+git submodule update --init --recursive
 export PYTHONPATH="${DATA_ROOT}/eat-em2v/external/EAT:${PYTHONPATH:-}"
 
 # Step 1: Extract frozen features if missing

@@ -17,7 +17,6 @@ from typing import List, Tuple
 import numpy as np
 import soundfile as sf
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
 from torch.utils.data import DataLoader, Dataset
@@ -27,7 +26,7 @@ from fairseq import utils as fairseq_utils
 from omegaconf import OmegaConf, open_dict
 import wandb
 
-api_key = os.environ.get("WANDB_API_KEY")
+from baselines.utils.fairseq_compat import apply_fairseq_compat_patches
 
 LABEL_MAP = {"ang": 0, "hap": 1, "neu": 2, "sad": 3}
 
@@ -222,6 +221,21 @@ def _load_eat_pretrained(checkpoint, target_length=None):
     if hasattr(pretrained_args, "lr_scheduler"):
         pretrained_args.lr_scheduler = None
 
+    def _set_skip_ema(cfg):
+        if cfg is None:
+            return
+        if OmegaConf.is_config(cfg):
+            with open_dict(cfg):
+                cfg["skip_ema"] = True
+            return
+        if isinstance(cfg, dict):
+            cfg["skip_ema"] = True
+            return
+        try:
+            setattr(cfg, "skip_ema", True)
+        except Exception:
+            return
+
     model_cfg = getattr(pretrained_args, "model", None)
     try:
         has_modalities = model_cfg is not None and "modalities" in model_cfg
@@ -239,6 +253,10 @@ def _load_eat_pretrained(checkpoint, target_length=None):
                 model_cfg["modalities"]["image"]["target_length"] = target_length
             if "mae_masking" in model_cfg["modalities"]["image"]:
                 del model_cfg["modalities"]["image"]["mae_masking"]
+
+    _set_skip_ema(model_cfg)
+    if not OmegaConf.is_config(pretrained_args):
+        _set_skip_ema(pretrained_args)
 
     if OmegaConf.is_config(pretrained_args):
         task = fairseq.tasks.setup_task(pretrained_args.task)
@@ -266,51 +284,9 @@ def _load_eat_pretrained(checkpoint, target_length=None):
     return model
 
 
-def _ensure_samepad2d():
-    try:
-        from fairseq import modules as fairseq_modules
-    except Exception:
-        return
-    if hasattr(fairseq_modules, "SamePad2d"):
-        return
-
-    class SamePad2d(nn.Module):
-        """
-        Replacement for fairseq.modules.SamePad2d (removed in fairseq 0.12).
-        Implements TensorFlow-style 'same' padding for Conv2d.
-        """
-
-        def __init__(self, kernel_size, stride=1, dilation=1):
-            super().__init__()
-            if isinstance(kernel_size, int):
-                kernel_size = (kernel_size, kernel_size)
-            self.kernel_size = kernel_size
-            self.stride = stride
-            self.dilation = dilation
-
-        def forward(self, x):
-            ih, iw = x.size()[-2:]
-            kh, kw = self.kernel_size
-
-            oh = (ih + self.stride - 1) // self.stride
-            ow = (iw + self.stride - 1) // self.stride
-
-            pad_h = max((oh - 1) * self.stride + (kh - 1) * self.dilation + 1 - ih, 0)
-            pad_w = max((ow - 1) * self.stride + (kw - 1) * self.dilation + 1 - iw, 0)
-
-            pad_top = pad_h // 2
-            pad_bottom = pad_h - pad_top
-            pad_left = pad_w // 2
-            pad_right = pad_w - pad_left
-
-            return F.pad(x, (pad_left, pad_right, pad_top, pad_bottom))
-
-    fairseq_modules.SamePad2d = SamePad2d
-
-
 def load_eat(checkpoint, device, backbone_type="eat_original", freeze_cnn=False, target_length=None):
     # Register EAT modules so custom tasks/models are available.
-    _ensure_samepad2d()
+    apply_fairseq_compat_patches()
     fairseq_utils.import_user_module(argparse.Namespace(user_dir="external/EAT"))
 
     if backbone_type == "eat_original":
