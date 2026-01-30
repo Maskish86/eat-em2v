@@ -15,7 +15,7 @@ def ensure_samepad2d():
     class SamePad2d(nn.Module):
         """
         Replacement for fairseq.modules.SamePad2d (removed in fairseq 0.12).
-        Implements TensorFlow-style 'same' padding for Conv2d.
+        Mirrors fairseq SamePad behavior by trimming extra rows/cols for even kernels.
         """
 
         def __init__(self, kernel_size, stride=1, dilation=1):
@@ -25,23 +25,15 @@ def ensure_samepad2d():
             self.kernel_size = kernel_size
             self.stride = stride
             self.dilation = dilation
+            self.remove_h = 1 if self.kernel_size[0] % 2 == 0 else 0
+            self.remove_w = 1 if self.kernel_size[1] % 2 == 0 else 0
 
         def forward(self, x):
-            ih, iw = x.size()[-2:]
-            kh, kw = self.kernel_size
-
-            oh = (ih + self.stride - 1) // self.stride
-            ow = (iw + self.stride - 1) // self.stride
-
-            pad_h = max((oh - 1) * self.stride + (kh - 1) * self.dilation + 1 - ih, 0)
-            pad_w = max((ow - 1) * self.stride + (kw - 1) * self.dilation + 1 - iw, 0)
-
-            pad_top = pad_h // 2
-            pad_bottom = pad_h - pad_top
-            pad_left = pad_w // 2
-            pad_right = pad_w - pad_left
-
-            return F.pad(x, (pad_left, pad_right, pad_top, pad_bottom))
+            if self.remove_h:
+                x = x[:, :, :-self.remove_h, :]
+            if self.remove_w:
+                x = x[:, :, :, :-self.remove_w]
+            return x
 
     fairseq_modules.SamePad2d = SamePad2d
 
@@ -59,15 +51,11 @@ def ensure_transpose_last_kwarg():
     if getattr(base_cls, "_eat_transpose_last_shim", False):
         return
 
-    try:
-        sig = inspect.signature(base_cls.__init__)
-    except (TypeError, ValueError):
-        sig = None
-
-    class TransposeLast(base_cls):
+    class TransposeLast(nn.Module):
         _eat_transpose_last_shim = True
 
-        def __init__(self, *args, **kwargs):
+        def __init__(self, dims=None, *args, **kwargs):
+            super().__init__()
             dim = None
 
             # Handle EAT typo and legacy keyword
@@ -76,11 +64,27 @@ def ensure_transpose_last_kwarg():
             elif "transpose_dim" in kwargs:
                 dim = kwargs.pop("transpose_dim")
 
-            # fairseq >= 0.12: positional `dims`
-            if dim is not None and sig and "dims" in sig.parameters:
-                args = (dim,) if not isinstance(dim, (list, tuple)) else tuple(dim)
+            if dims is None and dim is not None:
+                dims = dim
 
-            super().__init__(*args, **kwargs)
+            self._permute = None
+            if dims is None:
+                self._dims = None
+            elif isinstance(dims, (list, tuple)):
+                if len(dims) == 2:
+                    self._dims = (dims[0], dims[1])
+                else:
+                    self._dims = None
+                    self._permute = tuple(dims)
+            else:
+                self._dims = (dims, -1)
+
+        def forward(self, x):
+            if self._permute is not None:
+                return x.permute(*self._permute)
+            if self._dims is None:
+                return x.transpose(-1, -2)
+            return x.transpose(self._dims[0], self._dims[1])
 
     fairseq_modules.TransposeLast = TransposeLast
 
@@ -172,6 +176,7 @@ def ensure_ema_module():
         allowed = None
 
     orig_init = ema_cls.__init__
+    orig_set_decay = getattr(ema_cls, "set_decay", None)
 
     def __init__(self, *args, **kwargs):
         if allowed is None:
@@ -181,6 +186,13 @@ def ensure_ema_module():
         return orig_init(self, *args, **filtered_kwargs)
 
     ema_cls.__init__ = __init__
+
+    if orig_set_decay is not None:
+        def set_decay(self, *args, **kwargs):
+            kwargs.pop("weight_decay", None)
+            return orig_set_decay(self, *args, **kwargs)
+        ema_cls.set_decay = set_decay
+
     ema_cls._eat_ema_module_shim = True
 
 

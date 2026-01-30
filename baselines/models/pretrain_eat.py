@@ -368,7 +368,7 @@ class Data2VecMultiModel(BaseFairseqModel):
         logger.info("making target model")
 
         model_copy = Data2VecMultiModel(
-            self.cfg, self.modalities, skip_ema=True, task=self.task
+            self.cfg, self.modalities, skip_ema=True, task=None
         )
 
         if self.cfg.ema_encoder_only:
@@ -752,7 +752,7 @@ class Data2VecMultiModel(BaseFairseqModel):
             for i, x in enumerate(xs):
                 n = f"pred_var{suffix}_{i}" if len(xs) > 1 else f"pred_var{suffix}"
                 result[n] = self.compute_var(x.float())
-            if self.ema is not None:
+            if self.ema is not None and hasattr(self.ema, "logs"):
                 for k, v in self.ema.logs.items():
                     result[k] = v
 
@@ -808,6 +808,7 @@ class Data2VecMultiModel(BaseFairseqModel):
             scale = 1 / math.sqrt(x.size(-1))
 
         reg_loss = loss * scale
+        reg_loss = reg_loss.sum(dim=-1).mean()
 
         return reg_loss
     

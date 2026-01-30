@@ -132,6 +132,9 @@ def configure_from_task_cfg(cfg) -> None:
     job_type = getattr(cfg, "wandb_job_type", None)
     if job_type and not os.environ.get("WANDB_JOB_TYPE"):
         os.environ["WANDB_JOB_TYPE"] = str(job_type)
+    if not os.environ.get("WANDB_API_KEY"):
+        os.environ.setdefault("WANDB_MODE", "offline")
+        logger.warning("WANDB_API_KEY not set; forcing WANDB_MODE=offline.")
     if os.environ.get("WANDB_PROJECT") is None:
         logger.warning("wandb_enable is true but WANDB_PROJECT is not set.")
 
@@ -142,6 +145,11 @@ class WandbProgressBarWrapper:
 
     def __iter__(self):
         return iter(self.wrapped_bar)
+
+    def update_config(self, config):
+        if hasattr(self.wrapped_bar, "update_config"):
+            return self.wrapped_bar.update_config(config)
+        return None
 
     def log(self, stats, tag=None, step=None):
         run = _get_wandb_run()

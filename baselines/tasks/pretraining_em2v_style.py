@@ -16,7 +16,7 @@ from omegaconf import MISSING, II
 from fairseq.dataclass import FairseqDataclass
 from fairseq.tasks import FairseqTask, register_task
 
-from ...data import MaeImageDataset
+from ..data import MaeImageDataset
 from ..wandb_logging import configure_from_task_cfg
 
 
@@ -46,11 +46,11 @@ class MaeImagePretrainingConfig(FairseqDataclass):
     beit_transforms: bool = False
     target_transform: bool = False
     no_transform: bool = False
-    wandb_enable: bool = II("common.wandb_enable")
-    wandb_project: Optional[str] = II("common.wandb_project")
-    wandb_run_name: Optional[str] = II("common.wandb_run_name")
-    wandb_group: Optional[str] = II("common.wandb_group")
-    wandb_job_type: Optional[str] = II("common.wandb_job_type")
+    wandb_enable: bool = False
+    wandb_project: Optional[str] = None
+    wandb_run_name: Optional[str] = None
+    wandb_group: Optional[str] = None
+    wandb_job_type: Optional[str] = None
 
     rebuild_batches: bool = True
     precompute_mask_config: Optional[ImageMaskingConfig] = None

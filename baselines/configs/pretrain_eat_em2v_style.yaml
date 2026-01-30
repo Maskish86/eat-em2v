@@ -7,13 +7,8 @@ common:
   tensorboard_logdir: tb
   min_loss_scale: 1e-6
   fp16_no_flatten_grads: true
-  user_dir: ${env:PWD}
+  user_dir: ${env:DATA_ROOT}/eat-em2v/baselines
   seed: 42
-  wandb_project: emotion2vec-eat
-  wandb_run_name: eat-ser-pretrain
-  wandb_group: eat-ser-pretrain-seed42
-  wandb_job_type: pretrain
-  wandb_enable: true
 
 checkpoint:
   save_interval: 10
@@ -22,7 +17,6 @@ checkpoint:
 task:
   _name: mae_image_pretraining
   data: ${env:DATA_ROOT}/manifests/pretrain
-  pretrain_dataset: null
   rebuild_batches: true
   key: source
   precompute_mask_config: {}
@@ -31,13 +25,19 @@ task:
   h5_format: false
   target_length: 1024
   flexible_mask: false
+  wandb_project: emotion2vec-eat
+  wandb_run_name: eat-ser-pretrain
+  wandb_group: eat-ser-pretrain-seed42
+  wandb_job_type: pretrain
+  wandb_enable: true
 
 dataset:
   num_workers: 10
-  batch_size: 96
+  batch_size: 64
   skip_invalid_size_inputs_valid_test: true
   required_batch_size_multiple: 1
   disable_validation: true
+  valid_subset: train
 
 distributed_training:
   distributed_world_size: 1
@@ -54,14 +54,12 @@ criterion:
     - masked_pct
 
 optimization:
-  max_update: 130000
+  max_update: 340000
   lr: [ 5e-5 ]
-  debug_param_names: true
   clip_norm: 4
 
 optimizer:
   _name: composite
-  dynamic_groups: true
   groups:
     default:
       lr_float: 5e-5
@@ -89,7 +87,7 @@ model:
 
   depth: 12
   average_top_k_layers: 12
-  clone_batch: 16
+  clone_batch: 8
 
   norm_eps: 1e-6
   layer_decay: 0.65
