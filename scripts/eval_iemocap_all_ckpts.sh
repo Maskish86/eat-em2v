@@ -24,7 +24,7 @@ pip install --no-cache-dir wandb fairseq==0.12.2 soundfile torchaudio h5py tenso
 
 cd "${DATA_ROOT}"/eat-em2v
 git submodule update --init --recursive
-export PYTHONPATH="${DATA_ROOT}/eat-em2v/external/EAT:${PYTHONPATH:-}"
+export PYTHONPATH="${DATA_ROOT}/eat-em2v:${PYTHONPATH:-}"
 
 # Allow either CKPT_DIR or legacy CHECKPOINT to drive the sweep.
 if [ -z "${CKPT_DIR:-}" ] && [ -n "${CHECKPOINT:-}" ]; then
@@ -46,5 +46,6 @@ python baselines/downstream/eval_iemocap_all_ckpts.py \
   ${IEMOCAP_ROOT:+--iemocap_root "${IEMOCAP_ROOT}"} \
   ${EVERY:+--every "${EVERY}"} \
   ${BACKBONE_TYPE:+--backbone_type "${BACKBONE_TYPE}"} \
+  ${EM2V_CFG:+--em2v_cfg "${EM2V_CFG}"} \
   ${WANDB_PROJECT:+--wandb_project "${WANDB_PROJECT}"} \
   ${WANDB_GROUP:+--wandb_group "${WANDB_GROUP}"}

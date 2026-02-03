@@ -320,10 +320,90 @@ def _select_state_dict(state):
     raise KeyError(f"Could not find model weights in checkpoint. Keys: {keys}")
 
 
+def _clear_fairseq_task(name: str, class_name: str | None = None) -> None:
+    try:
+        import fairseq.tasks as fairseq_tasks
+    except Exception:
+        return
+    for registry_name in ("TASK_REGISTRY", "TASK_DATACLASS_REGISTRY"):
+        registry = getattr(fairseq_tasks, registry_name, None)
+        if isinstance(registry, dict):
+            registry.pop(name, None)
+    class_names = getattr(fairseq_tasks, "TASK_CLASS_NAMES", None)
+    if isinstance(class_names, set):
+        class_names.discard(name)
+        if class_name:
+            class_names.discard(class_name)
+
+
+def _clear_fairseq_model(name: str, class_name: str | None = None) -> None:
+    try:
+        import fairseq.models as fairseq_models
+    except Exception:
+        return
+    for registry_name in (
+        "MODEL_REGISTRY",
+        "MODEL_DATACLASS_REGISTRY",
+        "ARCH_MODEL_REGISTRY",
+        "ARCH_CONFIG_REGISTRY",
+        "ARCH_MODEL_NAME_REGISTRY",
+        "ARCH_MODEL_INV_REGISTRY",
+    ):
+        registry = getattr(fairseq_models, registry_name, None)
+        if isinstance(registry, dict):
+            registry.pop(name, None)
+    class_names = getattr(fairseq_models, "MODEL_CLASS_NAMES", None)
+    if isinstance(class_names, set):
+        class_names.discard(name)
+        if class_name:
+            class_names.discard(class_name)
+
+
+def _resolve_user_dir(*parts: str) -> str:
+    repo_root = Path(__file__).resolve().parents[2]
+    return str((repo_root.joinpath(*parts)).resolve())
+
+
+def _import_user_dir(backbone_type: str) -> None:
+    if backbone_type == "eat_original":
+        user_dir = _resolve_user_dir("external", "EAT")
+    elif backbone_type == "eat_em2v":
+        user_dir = _resolve_user_dir("baselines")
+    else:
+        return
+    fairseq_utils.import_user_module(argparse.Namespace(user_dir=user_dir))
+
+
+def _ensure_eat_registrations(backbone_type: str) -> None:
+    try:
+        import fairseq.tasks as fairseq_tasks
+        import fairseq.models as fairseq_models
+    except Exception:
+        return
+
+    task_registry = getattr(fairseq_tasks, "TASK_REGISTRY", {})
+    model_registry = getattr(fairseq_models, "MODEL_REGISTRY", {})
+
+    if "mae_image_pretraining" not in task_registry:
+        if backbone_type == "eat_em2v":
+            import baselines.tasks.pretraining_em2v_style  # noqa: F401
+        else:
+            import external.EAT.tasks.pretraining_AS2M  # noqa: F401
+
+    if "data2vec_multi" not in model_registry:
+        if backbone_type == "eat_em2v":
+            import baselines.models.pretrain_eat  # noqa: F401
+        else:
+            import external.EAT.models.EAT_pretraining  # noqa: F401
+
+
 def load_eat(checkpoint, device, backbone_type="eat_original", freeze_cnn=False, target_length=None, em2v_cfg=None):
     # Register EAT modules so custom tasks/models are available.
     apply_fairseq_compat_patches()
-    fairseq_utils.import_user_module(argparse.Namespace(user_dir="external/EAT"))
+    _clear_fairseq_task("mae_image_pretraining", "MaeImagePretrainingTask")
+    _clear_fairseq_model("data2vec_multi", "Data2VecMultiModel")
+    _import_user_dir(backbone_type)
+    _ensure_eat_registrations(backbone_type)
 
     if backbone_type == "eat_original":
         model = _load_eat_pretrained(checkpoint, target_length=target_length)

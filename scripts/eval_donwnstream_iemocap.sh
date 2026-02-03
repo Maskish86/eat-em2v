@@ -24,7 +24,7 @@ pip install --no-cache-dir wandb fairseq==0.12.2 soundfile torchaudio h5py tenso
 
 cd "${DATA_ROOT}"/eat-em2v
 git submodule update --init --recursive
-export PYTHONPATH="${DATA_ROOT}/eat-em2v/external/EAT:${PYTHONPATH:-}"
+export PYTHONPATH="${DATA_ROOT}/eat-em2v:${PYTHONPATH:-}"
 
 # Step 1: Extract frozen features if missing
 if [ ! -f "${FEAT_PREFIX}.npy" ] || [ ! -f "${FEAT_PREFIX}.lengths" ] || [ ! -f "${FEAT_PREFIX}.emo" ]; then
@@ -33,6 +33,7 @@ if [ ! -f "${FEAT_PREFIX}.npy" ] || [ ! -f "${FEAT_PREFIX}.lengths" ] || [ ! -f 
     --iemocap_root "${IEMOCAP_ROOT}" \
     --checkpoint "${CHECKPOINT}" \
     --backbone_type "${BACKBONE_TYPE:-eat_original}" \
+    ${EM2V_CFG:+--em2v_cfg "${EM2V_CFG}"} \
     --output_prefix "${FEAT_PREFIX}" \
     --batch_size "${BATCH_SIZE:-128}" \
     --num_workers 4 \
