@@ -20,7 +20,7 @@ fi
 # shellcheck disable=SC1090
 source "${ENV_FILE}"
 
-pip install --no-cache-dir wandb fairseq==0.11.2 soundfile torchaudio h5py tensorboardX scikit_learn timm
+pip install --no-cache-dir wandb fairseq==0.12.2 soundfile torchaudio h5py tensorboardX scikit_learn timm
 
 cd "${DATA_ROOT}"/eat-em2v
 git submodule update --init --recursive

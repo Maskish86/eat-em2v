@@ -795,7 +795,8 @@ class Data2VecMultiModel(BaseFairseqModel):
 
     def d2v_loss(self, x, y):
         x = x.view(-1, x.size(-1)).float()
-        y = y.view(-1, x.size(-1))
+        assert x.size(-1) == y.size(-1), "d2v_loss: feature dim mismatch"
+        y = y.view(-1, y.size(-1))
 
         if self.loss_beta == 0:
             loss = F.mse_loss(x, y, reduction="none")

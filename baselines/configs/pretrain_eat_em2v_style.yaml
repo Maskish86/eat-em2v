@@ -3,7 +3,7 @@
 common:
   fp16: true
   log_format: json
-  log_interval: 200
+  log_interval: 1000
   tensorboard_logdir: tb
   min_loss_scale: 1e-6
   fp16_no_flatten_grads: true
@@ -11,7 +11,7 @@ common:
   seed: 42
 
 checkpoint:
-  save_interval: 10
+  save_interval: 5
   no_epoch_checkpoints: false
 
 task:
@@ -54,8 +54,9 @@ criterion:
     - masked_pct
 
 optimization:
-  max_update: 340000
+  max_update: 230000
   lr: [ 5e-5 ]
+  max_epoch: 5
   clip_norm: 4
 
 optimizer:

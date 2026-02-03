@@ -284,7 +284,43 @@ def _load_eat_pretrained(checkpoint, target_length=None):
     return model
 
 
-def load_eat(checkpoint, device, backbone_type="eat_original", freeze_cnn=False, target_length=None):
+def _resolve_em2v_cfg(state, cfg_path=None):
+    if isinstance(state, dict):
+        cfg = state.get("config", None)
+        if isinstance(cfg, dict) and "fairseq" in cfg:
+            return cfg["fairseq"]
+        if "cfg" in state:
+            return state["cfg"]
+        if "args" in state:
+            return state["args"]
+    if cfg_path:
+        return OmegaConf.load(cfg_path)
+    return None
+
+
+def _get_cfg_node(cfg, key):
+    if OmegaConf.is_config(cfg):
+        return cfg[key] if key in cfg else getattr(cfg, key, None)
+    if isinstance(cfg, dict):
+        return cfg.get(key, None)
+    return getattr(cfg, key, None)
+
+
+def _select_state_dict(state):
+    if not isinstance(state, dict):
+        raise KeyError("Checkpoint payload is not a dict; cannot locate model weights.")
+    if "student_state_dict" in state:
+        return state["student_state_dict"]
+    for key in ("model", "state_dict"):
+        if key in state:
+            return state[key]
+    if all(torch.is_tensor(v) for v in state.values()):
+        return state
+    keys = ", ".join(sorted(state.keys()))
+    raise KeyError(f"Could not find model weights in checkpoint. Keys: {keys}")
+
+
+def load_eat(checkpoint, device, backbone_type="eat_original", freeze_cnn=False, target_length=None, em2v_cfg=None):
     # Register EAT modules so custom tasks/models are available.
     apply_fairseq_compat_patches()
     fairseq_utils.import_user_module(argparse.Namespace(user_dir="external/EAT"))
@@ -293,10 +329,50 @@ def load_eat(checkpoint, device, backbone_type="eat_original", freeze_cnn=False,
         model = _load_eat_pretrained(checkpoint, target_length=target_length)
     elif backbone_type == "eat_em2v":
         state = torch.load(checkpoint, map_location="cpu")
-        eat_cfg = state["config"]["fairseq"]
-        task = fairseq.tasks.setup_task(eat_cfg.task)
-        model = fairseq.models.build_model(eat_cfg.model, task)
-        model.load_state_dict(state["student_state_dict"], strict=True)
+        eat_cfg = _resolve_em2v_cfg(state, em2v_cfg)
+        if eat_cfg is None:
+            keys = ", ".join(sorted(state.keys())) if isinstance(state, dict) else type(state).__name__
+            raise KeyError(
+                "EAT-em2v checkpoint is missing config. Expected state['config']['fairseq'] "
+                "or state['cfg']/state['args']. Pass --em2v_cfg to load a YAML config. "
+                f"Checkpoint keys: {keys}"
+            )
+        if not OmegaConf.is_config(eat_cfg):
+            if hasattr(eat_cfg, "__dict__"):
+                eat_cfg = OmegaConf.create(vars(eat_cfg))
+            else:
+                eat_cfg = OmegaConf.create(eat_cfg)
+        raw_task_cfg = _get_cfg_node(eat_cfg, "task")
+        raw_model_cfg = _get_cfg_node(eat_cfg, "model")
+        if raw_task_cfg is None or raw_model_cfg is None:
+            raise KeyError("EAT-em2v config must include both 'task' and 'model' sections.")
+        def _project_task_cfg(raw_cfg):
+            data = OmegaConf.to_container(raw_cfg, resolve=True)
+            forbidden_prefixes = ("wandb_",)
+            clean = {k: v for k, v in data.items() if not k.startswith(forbidden_prefixes)}
+            return OmegaConf.create(clean)
+
+        def _project_model_cfg(raw_cfg):
+            data = OmegaConf.to_container(raw_cfg, resolve=True)
+            forbidden = {
+                "layer_decay",
+                "no_decay_blocks",
+                "ema_decay",
+                "ema_fp32",
+                "ema_start_update",
+                "ema_update_freq",
+            }
+            clean = {k: v for k, v in data.items() if k not in forbidden}
+            return OmegaConf.create(clean)
+
+        task_cfg = _project_task_cfg(raw_task_cfg)
+        model_cfg = _project_model_cfg(raw_model_cfg)
+        if OmegaConf.is_config(model_cfg):
+            with open_dict(model_cfg):
+                model_cfg["skip_ema"] = True
+        task = fairseq.tasks.setup_task(task_cfg)
+        model = fairseq.models.build_model(model_cfg, task)
+        model.load_state_dict(_select_state_dict(state), strict=True)
     else:
         raise ValueError(f"Unknown backbone_type: {backbone_type}")
 
@@ -330,6 +406,11 @@ def main():
         default="eat_original",
         help="Backbone checkpoint type to load (eat_original follows external/EAT Fairseq checkpoint format).",
     )
+    ap.add_argument(
+        "--em2v_cfg",
+        default=None,
+        help="Optional YAML config for EAT-em2v checkpoints that lack embedded config.",
+    )
     ap.add_argument("--output_prefix", required=True, help="Prefix for output files (writes .npy, .lengths, .emo).")
     ap.add_argument("--batch_size", type=int, default=4)
     ap.add_argument("--num_workers", type=int, default=4)
@@ -341,6 +422,7 @@ def main():
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--wandb_project", default=None, help="If set, log feature extraction metadata + artifacts to W&B.")
     ap.add_argument("--wandb_name", default=None, help="Optional W&B run name.")
+    ap.add_argument("--wandb_group", default=None, help="Optional W&B group name.")
     ap.add_argument("--wandb_job_type", default="feature_extraction")
     ap.add_argument("--seed", type=int, default=0, help="Seed for reproducible feature extraction ordering.")
     args = ap.parse_args()
@@ -382,6 +464,7 @@ def main():
         backbone_type=args.backbone_type,
         freeze_cnn=False,
         target_length=args.target_length,
+        em2v_cfg=args.em2v_cfg,
     )
 
     wandb_run = None
@@ -390,6 +473,7 @@ def main():
             project=args.wandb_project,
             job_type=args.wandb_job_type,
             name=args.wandb_name or f"{args.backbone_type}-iemocap",
+            group=args.wandb_group or None,
             config={
                 "backbone_type": args.backbone_type,
                 "checkpoint": args.checkpoint,
