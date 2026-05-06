@@ -25,3 +25,5 @@ datasets/
 # Generated configs / temp files
 pretrain_eat_em2v_style_args.yaml
 *.tmp
+
+.env

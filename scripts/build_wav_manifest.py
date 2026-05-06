@@ -16,12 +16,13 @@ DEFAULT_EXCLUDE_DIRS = [
     "tmp",
     "cache",
     "logs",
+    "IEMOCAP_full_release"
 ]
 
 
 def _should_skip_dir(name, exclude_substrings):
     lower_name = name.lower()
-    return any(sub in lower_name for sub in exclude_substrings)
+    return any(lower_name == sub.lower() for sub in exclude_substrings)
 
 
 def _iter_wav_files(root, exclude_substrings, ext):
@@ -57,6 +58,7 @@ def _read_frames(item):
 
 
 def main():
+    # Usage: python scripts/build_wav_manifest.py --root datasets --out manifests/pretrain/train.tsv
     ap = argparse.ArgumentParser(description="Build a Fairseq wav manifest.")
     ap.add_argument("--root", required=True, help="Root directory to scan.")
     ap.add_argument("--out", required=True, help="Output manifest path.")
@@ -67,6 +69,11 @@ def main():
         default=",".join(DEFAULT_EXCLUDE_DIRS),
         help="Comma-separated directory substrings to exclude.",
     )
+    ap.add_argument(
+        "--exclude-datasets",
+        default="",
+        help="Comma-separated top-level dataset names to skip entirely.",
+    )
     args = ap.parse_args()
 
     root = os.path.abspath(args.root)
@@ -74,6 +81,9 @@ def main():
     exclude_substrings = [
         s.strip().lower() for s in args.exclude_dirs.split(",") if s.strip()
     ]
+    exclude_datasets = {
+        s.strip() for s in args.exclude_datasets.split(",") if s.strip()
+    }
 
     existing = set()
     out_dir = os.path.dirname(os.path.abspath(args.out))
@@ -119,6 +129,8 @@ def main():
         for path in scan_bar:
             relpath = os.path.relpath(path, root).replace(os.path.sep, "/")
             if relpath in existing:
+                continue
+            if exclude_datasets and relpath.split("/")[0] in exclude_datasets:
                 continue
             yield path, relpath
 

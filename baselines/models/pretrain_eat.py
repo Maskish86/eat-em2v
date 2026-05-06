@@ -739,6 +739,7 @@ class Data2VecMultiModel(BaseFairseqModel):
         if self.cfg.d2v_loss > 0:
             for i, x in enumerate(xs):
                 reg_loss = self.d2v_loss(x, y)
+                assert reg_loss > 0, f"reg_loss must be positive, got {reg_loss}"
                 n = f"{mode}_regression_{i}" if len(xs) > 1 else f"{mode}_regression"
                 result["losses"][n] = reg_loss * self.cfg.d2v_loss
 

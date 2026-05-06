@@ -32,7 +32,8 @@ def set_seed(seed: int):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def get_splits():
@@ -70,7 +71,7 @@ def train_one_epoch(model, optimizer, criterion, train_loader, device, scheduler
 
 
 def train_and_eval(args):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(args.device)
     set_seed(args.seed)
 
     output_dir = Path(args.output_dir)
@@ -199,6 +200,7 @@ def parse_args():
     ap.add_argument("--eval_is_test", action="store_true", help="Use test set as validation (no val split).")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--output_dir", default="runs/iemocap_eval")
+    ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--wandb_project", default=None)
     ap.add_argument("--wandb_name", default=None)
     ap.add_argument("--wandb_group", default=None)

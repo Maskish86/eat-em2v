@@ -42,7 +42,7 @@ if [ ! -f "${FEAT_PREFIX}.npy" ] || [ ! -f "${FEAT_PREFIX}.lengths" ] || [ ! -f 
     --patch_size 16 \
     --norm_mean -4.268 \
     --norm_std 4.569 \
-    --device cuda \
+    --device "${DEVICE:-cuda}" \
     --seed "${SEED:-42}"
 else
   echo "Feature files already present; skipping extraction."
@@ -63,6 +63,7 @@ python baselines/downstream/eval_downstream_iemocap.py \
   --eval_is_test \
   --seed "${SEED:-42}" \
   --output_dir "${OUT_DIR}" \
+  --device "${DEVICE:-cuda}" \
   ${WANDB_PROJECT:+--wandb_project "${WANDB_PROJECT}"} \
   ${WANDB_NAME:+--wandb_name "${WANDB_NAME}"} \
   ${WANDB_GROUP:+--wandb_group "${WANDB_GROUP}"}

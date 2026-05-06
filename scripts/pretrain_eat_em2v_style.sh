@@ -1,4 +1,22 @@
 #!/bin/bash
+# EAT-em2v style pretraining entry point.
+#
+# Usage:
+#   bash scripts/pretrain_eat_em2v_style.sh [HYDRA_OVERRIDES...]
+#
+# Examples (ablation overrides passed directly to Hydra):
+#   bash scripts/pretrain_eat_em2v_style.sh optimization.lr=[5e-5]
+#   bash scripts/pretrain_eat_em2v_style.sh checkpoint.save_dir=/path/to/run model.encoder_layers=8
+#
+# Env vars:
+#   DATA_ROOT  — repo parent dir; inferred automatically if not set
+#   RUN_NAME   — sets checkpoint save dir suffix and wandb_run_name (default: ser_pretrained)
+#
+# Resume logic (in priority order):
+#   1. Auto-resume from checkpoint_last.pt if it exists
+#   2. Init from EAT-base_epoch30_pt.pt with optimizer/scheduler reset
+#   3. Train from scratch
+
 set -e
 
 if [ -z "${DATA_ROOT:-}" ]; then
@@ -16,7 +34,10 @@ git submodule update --init --recursive
 export PYTHONPATH="${DATA_ROOT}/eat-em2v:${PYTHONPATH}"
 export WANDB_RUN_ID_FILE="${DATA_ROOT}/wandb/run_id"
 
-CHECKPOINT_DIR="${DATA_ROOT}/checkpoints/ser_pretrained"
+# RUN_NAME controls both the checkpoint save directory and the wandb run name.
+# Set via env var to isolate ablation runs: RUN_NAME=ablation_lr5e5 bash ...
+RUN_NAME="${RUN_NAME:-ser_pretrained}"
+CHECKPOINT_DIR="${DATA_ROOT}/checkpoints/${RUN_NAME}"
 PRETRAINED_CKPT="${DATA_ROOT}/checkpoints/pretrained/EAT-base_epoch30_pt.pt"
 RESTORE_ARG=()
 if [ -f "${CHECKPOINT_DIR}/checkpoint_last.pt" ]; then
@@ -43,3 +64,5 @@ python -m fairseq_cli.hydra_train -m \
     "${RESTORE_ARG[@]}" \
     task.data=${MANIFEST_ROOT} \
     task.h5_format=False \
+    task.wandb_run_name="${RUN_NAME}" \
+    "$@"
