@@ -1,6 +1,9 @@
 [submodule "external/EAT"]
 	path = external/EAT
-	url = git@github.com:cwx-worst-one/EAT.git
+	url = https://github.com/cwx-worst-one/EAT.git
 [submodule "external/emotion2vec"]
 	path = external/emotion2vec
-	url = git@github.com:ddlBoJack/emotion2vec.git
+	url = https://github.com/ddlBoJack/emotion2vec.git
+[submodule "external/dinov2"]
+	path = external/dinov2
+	url = https://github.com/facebookresearch/dinov2.git

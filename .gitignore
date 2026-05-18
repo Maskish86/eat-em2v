@@ -22,8 +22,7 @@ datasets/
 *.lengths
 *.emo
 
-# Generated configs / temp files
-pretrain_eat_em2v_style_args.yaml
+# temp files
 *.tmp
 
 .env
