@@ -160,14 +160,9 @@ def train_and_eval(args):
         torch.save(model.state_dict(), ckpt_path)
 
         if wb_run:
-            wandb.log(
-                {
-                    f"fold_{fold}/test_WA": test_wa,
-                    f"fold_{fold}/test_UA": test_ua,
-                    f"fold_{fold}/test_F1": test_f1,
-                    "fold": fold,
-                }
-            )
+            wandb.summary[f"fold_{fold}/test_WA"] = test_wa
+            wandb.summary[f"fold_{fold}/test_UA"] = test_ua
+            wandb.summary[f"fold_{fold}/test_F1"] = test_f1
             artifact = wandb.Artifact(
                 name=f"iemocap-fold{fold}-checkpoint",
                 type="model",

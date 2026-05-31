@@ -38,6 +38,9 @@ from external.EAT.models.images import (
     ImageEncoder,
 )
 
+from external.dinov2.dinov2.layers.dino_head import DINOHead
+from external.dinov2.dinov2.loss.dino_clstoken_loss import DINOLoss
+
 logger = logging.getLogger(__name__)
 
 # we follow the work of data2vec 2.0 on image modality and Audio-MAE in EAT 
@@ -147,12 +150,15 @@ class Data2VecMultiConfig(FairseqDataclass):
 
     decoder_group: bool = False
 
-    # the experiment of using dino loss instead of direct utterance loss (not included in our paper)
-    utterance_level: bool = field(default=False, metadata={"help": "if true, we will add utterance-level loss to the total loss"})
-    init_center_token_zero: bool = field(default=False, metadata={"help": "if true, we will initialize the centor token with zero vertors"})
-    center_exp: float = field(default=0.9, metadata={"help": "this value control the exponent decay of center value's coefficient"})
-    softmax_temperature_student: float = field(default=0.1, metadata={"help": "this value control the temperature of softmax function of student output in the dino loss"})
-    softmax_temperature_teacher: float = field(default=0.05, metadata={"help": "this value control the temperature of softmax function in teacher output the dino loss"})
+    softmax_temperature_student: float = field(default=0.1, metadata={"help": "student temperature for DINOLoss"})
+
+    use_dino_head: bool = field(default=False, metadata={"help": "if true, use DINOHead MLP + DINOLoss for CLS loss; if false, use MSE against mean-pooled teacher patches"})
+    dino_out_dim: int = field(default=65536, metadata={"help": "DINO prototype dimension"})
+    dino_nlayers: int = field(default=3, metadata={"help": "DINOHead MLP layers"})
+    dino_hidden_dim: int = field(default=2048, metadata={"help": "DINOHead hidden dim"})
+    dino_bottleneck_dim: int = field(default=256, metadata={"help": "DINOHead bottleneck dim"})
+    dino_teacher_temp: float = field(default=0.04, metadata={"help": "teacher sharpening temperature for DINOLoss"})
+    dino_center_momentum: float = field(default=0.9, metadata={"help": "EMA momentum for DINOLoss center buffer"})
 
 
 @register_model("data2vec_multi", dataclass=Data2VecMultiConfig)
@@ -230,7 +236,6 @@ class Data2VecMultiModel(BaseFairseqModel):
         self.average_top_k_layers = cfg.average_top_k_layers
         self.loss_beta = cfg.loss_beta
         self.loss_scale = cfg.loss_scale
-        self.utterance_level = cfg.utterance_level
 
         self.dropout_input = nn.Dropout(cfg.dropout_input)
 
@@ -267,9 +272,28 @@ class Data2VecMultiModel(BaseFairseqModel):
             if cfg.recon_loss > 0:
                 self.recon_proj = nn.Linear(cfg.embed_dim, cfg.embed_dim//3)
                 
-            self.cls_proj = None
-            if cfg.utterance_level:
-                self.cls_proj = nn.Linear(cfg.embed_dim, cfg.embed_dim)
+            self.student_dino_head = None
+            self.teacher_dino_head = None
+            self.dino_loss_fn = None
+            if cfg.use_dino_head:
+                self.student_dino_head = DINOHead(
+                    cfg.embed_dim, cfg.dino_out_dim,
+                    nlayers=cfg.dino_nlayers, hidden_dim=cfg.dino_hidden_dim,
+                    bottleneck_dim=cfg.dino_bottleneck_dim,
+                )
+                self.teacher_dino_head = DINOHead(
+                    cfg.embed_dim, cfg.dino_out_dim,
+                    nlayers=cfg.dino_nlayers, hidden_dim=cfg.dino_hidden_dim,
+                    bottleneck_dim=cfg.dino_bottleneck_dim,
+                )
+                for p_s, p_t in zip(self.student_dino_head.parameters(), self.teacher_dino_head.parameters()):
+                    p_t.data.copy_(p_s.data)
+                self.teacher_dino_head.requires_grad_(False)
+                self.dino_loss_fn = DINOLoss(
+                    cfg.dino_out_dim,
+                    student_temp=cfg.softmax_temperature_student,
+                    center_momentum=cfg.dino_center_momentum,
+                )
 
         for pn, p in self.named_parameters():
             if len(p.shape) == 1 or pn.endswith(".bias") or "alibi_scale" in pn:
@@ -311,20 +335,6 @@ class Data2VecMultiModel(BaseFairseqModel):
                             optim_override["optimizer"] = {"lr_scale": lr_scale}
                         p.optim_overrides = optim_override
         
-        # dino loss experiment
-        self.center = None
-        if self.utterance_level:
-            self.center_exp = cfg.center_exp
-            self.soft_tem_s = cfg.softmax_temperature_student
-            self.soft_tem_t = cfg.softmax_temperature_teacher
-            self.center = nn.Parameter(
-                    torch.zeros(1, 1, cfg.embed_dim, requires_grad=False)
-                )
-            if not cfg.init_center_token_zero:
-                nn.init.normal_(self.center)
-            elif self.center.size(1) > 1:
-                nn.init.normal_(self.center[:, 1:])
-
         self.num_updates = 0
 
     def _init_weights(self, m):
@@ -412,6 +422,10 @@ class Data2VecMultiModel(BaseFairseqModel):
                 self.ema.set_decay(decay, weight_decay=ema_weight_decay)
             if self.ema.get_decay() < 1:
                 self.ema.step(self.blocks if self.cfg.ema_encoder_only else self)
+                if self.student_dino_head is not None:
+                    decay = self.ema.get_decay()
+                    for p_s, p_t in zip(self.student_dino_head.parameters(), self.teacher_dino_head.parameters()):
+                        p_t.data.mul_(decay).add_(p_s.data, alpha=1 - decay)
 
         self.num_updates = num_updates
 
@@ -656,7 +670,12 @@ class Data2VecMultiModel(BaseFairseqModel):
                 y.append(lr[:, extra_tokens:])
                 ema_x.append(ema_input[:, extra_tokens:])
 
-        # EAT utilize total 12 Transformer block layer output average as target  
+            teacher_cls_logits = None
+            if self.teacher_dino_head is not None:
+                teacher_cls = ema_input[:, 0].float()  # (B, embed_dim)
+                teacher_cls_logits = self.teacher_dino_head(teacher_cls)  # (B, dino_out_dim)
+
+        # EAT utilize total 12 Transformer block layer output average as target
         y = self.make_targets(y, self.average_top_k_layers)
         orig_targets = y
 
@@ -684,36 +703,46 @@ class Data2VecMultiModel(BaseFairseqModel):
 
         sample_size = result["sample_size"]
 
-        # EAT employ utterance-level loss by using mean pooling in patch dimension
-        if self.cfg.cls_loss > 0 and not self.utterance_level:
+        # MSE CLS loss: student CLS predicts mean-pooled teacher patch targets
+        if self.cfg.cls_loss > 0 and not self.cfg.use_dino_head:
             assert extra_tokens > 0
             cls_target = orig_targets.mean(dim=1)
             if self.cfg.clone_batch > 1:
                 cls_target = cls_target.repeat_interleave(self.cfg.clone_batch, 0)
             cls_pred = x[:, extra_tokens - 1]
-            
+
             result["losses"]["cls"] = self.d2v_loss(cls_pred, cls_target) * (
                 self.cfg.cls_loss * sample_size
             )
-            
-        # dino loss experiment
-        if self.cfg.cls_loss > 0 and self.utterance_level:
+
+        # DINO loss with DINOHead MLP and proper prototype space
+        if self.cfg.cls_loss > 0 and self.cfg.use_dino_head:
             assert extra_tokens > 0
-            cls_target = orig_targets.mean(dim=1)
+            assert teacher_cls_logits is not None
+
+            student_cls = x[:, extra_tokens - 1]                    # (B*clone, embed_dim)
+            student_logits = self.student_dino_head(student_cls)    # (B*clone, dino_out_dim)
+
             if self.cfg.clone_batch > 1:
-                cls_target = cls_target.repeat_interleave(self.cfg.clone_batch, 0)  #(btz*clone,1,768)
-            cls_pred = x[:, extra_tokens - 1]
-            cls_target = cls_target - self.center
-            
-            cls_pred = cls_pred.squeeze(dim=1)
-            cls_target = cls_target.squeeze(dim=1)
-            
-            result["losses"]["cls"] = self.dino_loss(cls_pred, cls_target) * (
-                self.cfg.cls_loss * sample_size
+                teacher_logits_rep = teacher_cls_logits.repeat_interleave(self.cfg.clone_batch, 0)
+            else:
+                teacher_logits_rep = teacher_cls_logits
+
+            teacher_soft = self.dino_loss_fn.softmax_center_teacher(
+                teacher_logits_rep, self.cfg.dino_teacher_temp
             )
-            
-            self.center = self.center_exp * self.center + (1 - self.center_exp) * (cls_target.mean(dim=0))
-            
+            self.dino_loss_fn.update_center(teacher_cls_logits)  # B samples (not repeated)
+
+            result["losses"]["cls"] = self.dino_loss_fn(
+                [student_logits], [teacher_soft]
+            ) * (self.cfg.cls_loss * sample_size)
+
+            with torch.no_grad():
+                result["dino_center_norm"] = self.dino_loss_fn.center.norm()
+                result["dino_center_std"] = self.dino_loss_fn.center.std()
+                result["dino_teacher_entropy"] = -(teacher_soft * torch.log(teacher_soft + 1e-8)).sum(dim=-1).mean()
+                result["dino_active_prototypes"] = (teacher_soft.max(dim=0).values > 1e-4).sum().float()
+
         if self.cfg.recon_loss > 0:
 
             with torch.no_grad():
@@ -733,7 +762,7 @@ class Data2VecMultiModel(BaseFairseqModel):
                 recon = self.recon_proj(recon)
 
             result["losses"]["recon"] = (
-                self.d2v_loss(recon, target.float()) * self.cfg.recon_loss
+                self.d2v_loss(recon, target.float()) * self.cfg.recon_loss * sample_size
             )
 
         if self.cfg.d2v_loss > 0:
@@ -814,12 +843,6 @@ class Data2VecMultiModel(BaseFairseqModel):
 
         return reg_loss
     
-    def dino_loss(self,s,t):
-        t = t.detach()
-        s = F.softmax(s/self.soft_tem_s,dim=1)
-        t = F.softmax((t-self.center)/self.soft_tem_t,dim=1)
-        return - (t * torch.log(s)).sum(dim=1).mean()
-    
     # average top-k layers output from teacher model
     def make_targets(self, y, num_layers):
 
@@ -899,7 +922,10 @@ class Data2VecMultiModel(BaseFairseqModel):
     def remove_pretraining_modules(self, modality=None, keep_decoder=False):
         self.ema = None
         self.cfg.clone_batch = 1
-        self.recon_proj = None        
+        self.recon_proj = None
+        self.student_dino_head = None
+        self.teacher_dino_head = None
+        self.dino_loss_fn = None
 
         if not keep_decoder:
             self.shared_decoder = None

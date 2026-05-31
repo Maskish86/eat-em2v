@@ -7,3 +7,6 @@
 [submodule "external/dinov2"]
 	path = external/dinov2
 	url = https://github.com/facebookresearch/dinov2.git
+[submodule "external/fairseq"]
+	path = external/fairseq
+	url = https://github.com/facebookresearch/fairseq.git

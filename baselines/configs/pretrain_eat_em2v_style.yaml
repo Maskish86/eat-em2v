@@ -51,6 +51,10 @@ criterion:
     - model_norm
     - ema_norm
     - masked_pct
+    - dino_center_norm
+    - dino_center_std
+    - dino_teacher_entropy
+    - dino_active_prototypes
 
 optimization:
   max_update: 150_000
@@ -103,6 +107,17 @@ model:
 
   supported_modality: IMAGE
   cls_loss: 1
+  recon_loss: 1
+  d2v_loss: 0
+
+  use_dino_head: true
+  dino_out_dim: 4096
+  dino_nlayers: 3
+  dino_hidden_dim: 2048
+  dino_bottleneck_dim: 256
+  dino_teacher_temp: 0.04
+  dino_center_momentum: 0.9
+  softmax_temperature_student: 0.1
 
   ema_encoder_only: false
 
