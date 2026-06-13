@@ -452,7 +452,7 @@ def load_eat(checkpoint, device, backbone_type="eat_original", freeze_cnn=False,
                 model_cfg["skip_ema"] = True
         task = fairseq.tasks.setup_task(task_cfg)
         model = fairseq.models.build_model(model_cfg, task)
-        model.load_state_dict(_select_state_dict(state), strict=True)
+        model.load_state_dict(_select_state_dict(state), strict=False)
     else:
         raise ValueError(f"Unknown backbone_type: {backbone_type}")
 

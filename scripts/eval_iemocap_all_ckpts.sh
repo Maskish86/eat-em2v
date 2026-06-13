@@ -25,6 +25,7 @@ pip install --no-cache-dir wandb fairseq==0.12.2 soundfile torchaudio h5py tenso
 cd "${DATA_ROOT}"/eat-em2v
 git submodule update --init --recursive
 export PYTHONPATH="${DATA_ROOT}/eat-em2v:${PYTHONPATH:-}"
+export WANDB_DIR="${DATA_ROOT}/wandb"
 
 # Allow either CKPT_DIR or legacy CHECKPOINT to drive the sweep.
 if [ -z "${CKPT_DIR:-}" ] && [ -n "${CHECKPOINT:-}" ]; then

@@ -673,6 +673,7 @@ class Data2VecMultiModel(BaseFairseqModel):
             teacher_cls_logits = None
             if self.teacher_dino_head is not None:
                 teacher_cls = ema_input[:, 0].float()  # (B, embed_dim)
+                self.teacher_dino_head.float()  # weight_norm kernel requires float32
                 teacher_cls_logits = self.teacher_dino_head(teacher_cls)  # (B, dino_out_dim)
 
         # EAT utilize total 12 Transformer block layer output average as target
@@ -720,7 +721,8 @@ class Data2VecMultiModel(BaseFairseqModel):
             assert extra_tokens > 0
             assert teacher_cls_logits is not None
 
-            student_cls = x[:, extra_tokens - 1]                    # (B*clone, embed_dim)
+            student_cls = x[:, extra_tokens - 1].float()            # (B*clone, embed_dim)
+            self.student_dino_head.float()  # weight_norm kernel requires float32
             student_logits = self.student_dino_head(student_cls)    # (B*clone, dino_out_dim)
 
             if self.cfg.clone_batch > 1:

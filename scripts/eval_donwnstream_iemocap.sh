@@ -25,6 +25,7 @@ pip install --no-cache-dir wandb fairseq==0.12.2 soundfile torchaudio h5py tenso
 cd "${DATA_ROOT}"/eat-em2v
 git submodule update --init --recursive
 export PYTHONPATH="${DATA_ROOT}/eat-em2v:${PYTHONPATH:-}"
+export WANDB_DIR="${DATA_ROOT}/wandb"
 
 # Step 1: Extract frozen features if missing
 if [ ! -f "${FEAT_PREFIX}.npy" ] || [ ! -f "${FEAT_PREFIX}.lengths" ] || [ ! -f "${FEAT_PREFIX}.emo" ]; then

@@ -5,12 +5,11 @@ common:
   bf16: true
   log_format: json
   log_interval: 1000
-  tensorboard_logdir: tb
   user_dir: ${env:DATA_ROOT}/eat-em2v/baselines
   seed: 42
 
 checkpoint:
-  save_interval: 15
+  save_interval: 5
   no_epoch_checkpoints: false
 
 task:
@@ -59,7 +58,7 @@ criterion:
 optimization:
   max_update: 150_000
   lr: [ 1e-5 ]
-  max_epoch: 15
+  max_epoch: 20
   clip_norm: 4
 
 optimizer:
@@ -73,7 +72,7 @@ optimizer:
         weight_decay: 1e-2
       lr_scheduler:
         _name: cosine
-        warmup_updates: 30_000  # scale to dataset size
+        warmup_updates: 20_000  # scale to dataset size
         min_lr: 1e-6
 
 lr_scheduler: pass_through

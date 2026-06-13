@@ -32,6 +32,7 @@ cd "${DATA_ROOT}"/eat-em2v
 git submodule update --init --recursive
 
 export PYTHONPATH="${DATA_ROOT}/eat-em2v:${PYTHONPATH}"
+export WANDB_DIR="${DATA_ROOT}/wandb"
 export WANDB_RUN_ID_FILE="${DATA_ROOT}/wandb/run_id"
 
 # RUN_NAME controls both the checkpoint save directory and the wandb run name.
