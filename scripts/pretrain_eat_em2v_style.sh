@@ -26,6 +26,22 @@ if [ -z "${DATA_ROOT:-}" ]; then
   echo "[INFO] DATA_ROOT not set; inferred as ${DATA_ROOT}"
 fi
 
+ENV_FILE="${DATA_ROOT}/eat-em2v/.env"
+[ -f "${ENV_FILE}" ] && source "${ENV_FILE}"
+export WANDB_API_KEY RUNPOD_API_KEY
+
+stop_pod() {
+  if [ -n "${RUNPOD_POD_ID:-}" ] && [ -n "${RUNPOD_API_KEY:-}" ]; then
+    echo "[INFO] Stopping pod ${RUNPOD_POD_ID}"
+    curl --silent --request POST \
+      --header 'content-type: application/json' \
+      --url "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+      --data "{\"query\": \"mutation { podStop(input: { podId: \\\"${RUNPOD_POD_ID}\\\" }) { id } }\"}" \
+      || true
+  fi
+}
+trap stop_pod EXIT
+
 pip install --no-cache-dir wandb fairseq==0.12.2 soundfile torchaudio h5py tensorboardX scikit_learn timm
 
 cd "${DATA_ROOT}"/eat-em2v
@@ -33,11 +49,11 @@ git submodule update --init --recursive
 
 export PYTHONPATH="${DATA_ROOT}/eat-em2v:${PYTHONPATH}"
 export WANDB_DIR="${DATA_ROOT}/wandb"
-export WANDB_RUN_ID_FILE="${DATA_ROOT}/wandb/run_id"
 
 # RUN_NAME controls both the checkpoint save directory and the wandb run name.
 # Set via env var to isolate ablation runs: RUN_NAME=ablation_lr5e5 bash ...
 RUN_NAME="${RUN_NAME:-ser_pretrained}"
+export WANDB_RUN_ID_FILE="${DATA_ROOT}/wandb/run_id_${RUN_NAME}"
 CHECKPOINT_DIR="${DATA_ROOT}/checkpoints/${RUN_NAME}"
 PRETRAINED_CKPT="${DATA_ROOT}/checkpoints/pretrained/EAT-base_epoch30_pt.pt"
 RESTORE_ARG=()

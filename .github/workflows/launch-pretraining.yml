@@ -1,0 +1,75 @@
+name: Launch Pretraining
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_name:
+        description: 'RUN_NAME (checkpoint dir + wandb run name)'
+        required: true
+        default: 'ser_pretrained'
+      learning_rate:
+        description: 'Learning rate (e.g. 1e-5, 5e-5)'
+        required: false
+        default: '1e-5'
+      mask_prob:
+        description: 'Mask probability (e.g. 0.8)'
+        required: false
+        default: '0.8'
+      use_dino_head:
+        description: 'Use DINO head (true/false)'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      cls_loss:
+        description: 'CLS loss weight (e.g. 1, 0.5, 0)'
+        required: false
+        default: '1'
+      gpu_type:
+        description: 'GPU type'
+        required: false
+        default: 'NVIDIA A100-SXM4-80GB'
+        type: choice
+        options:
+          - NVIDIA A100-SXM4-80GB
+          - NVIDIA H100 SXM
+          - NVIDIA A40
+
+jobs:
+  start:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Launch pod
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          VOLUME_ID: ${{ secrets.VOLUME_ID }}
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+        run: |
+          CMD="RUN_NAME=${{ inputs.run_name }} WANDB_API_KEY=${WANDB_API_KEY} RUNPOD_API_KEY=${RUNPOD_API_KEY} bash -c '/workspace/eat-em2v/scripts/pretrain_eat_em2v_style.sh optimization.lr=[${{ inputs.learning_rate }}] optimizer.groups.default.lr_float=${{ inputs.learning_rate }} model.modalities.image.mask_prob=${{ inputs.mask_prob }} model.use_dino_head=${{ inputs.use_dino_head }} model.cls_loss=${{ inputs.cls_loss }}'"
+
+          RESPONSE=$(curl --silent --request POST \
+            --header 'content-type: application/json' \
+            --url "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+            --data "$(jq -n \
+              --arg vol "$VOLUME_ID" \
+              --arg cmd "$CMD" \
+              --arg gpu "${{ inputs.gpu_type }}" \
+              '{query: "mutation { podFindAndDeployOnDemand(input: { cloudType: ALL, gpuCount: 1, containerDiskInGb: 40, minVcpuCount: 2, minMemoryInGb: 15, gpuTypeId: \"\($gpu)\", name: \"eat-em2v\", imageName: \"runpod/pytorch:2.1.0-py3.10-cuda12.1-devel\", networkVolumeId: \"\($vol)\", volumeMountPath: \"/workspace\", dockerArgs: \"\($cmd)\" }) { id } }"}'
+            )")
+
+          echo "RunPod response: $RESPONSE"
+
+          POD_ID=$(echo "$RESPONSE" | jq -r '.data.podFindAndDeployOnDemand.id // empty')
+          ERROR=$(echo "$RESPONSE" | jq -r '.errors[0].message // empty')
+
+          if [ -n "$POD_ID" ]; then
+            echo "Pod launched: $POD_ID"
+          elif [ -n "$ERROR" ]; then
+            echo "RunPod error: $ERROR" >&2
+            exit 1
+          else
+            echo "Unknown error. Full response: $RESPONSE" >&2
+            exit 1
+          fi

@@ -17,6 +17,10 @@ if [ -z "${DATA_ROOT:-}" ]; then
   echo "[INFO] DATA_ROOT not set; inferred as ${DATA_ROOT}"
 fi
 
+MAIN_ENV="${DATA_ROOT}/eat-em2v/.env"
+[ -f "${MAIN_ENV}" ] && source "${MAIN_ENV}"
+export WANDB_API_KEY
+
 # shellcheck disable=SC1090
 source "${ENV_FILE}"
 

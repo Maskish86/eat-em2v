@@ -70,6 +70,23 @@ def train_one_epoch(model, optimizer, criterion, train_loader, device, scheduler
     return train_loss
 
 
+def per_class_accuracy(model, loader, device, label_dict):
+    inv = {v: k for k, v in label_dict.items()}
+    counts = {k: [0, 0] for k in label_dict}  # [correct, total]
+    model.eval()
+    with torch.no_grad():
+        for batch in loader:
+            feats = batch["net_input"]["feats"].to(device)
+            mask = batch["net_input"]["padding_mask"].to(device)
+            labels = batch["labels"].to(device)
+            preds = model(feats, mask).argmax(dim=1)
+            for pred, label in zip(preds.cpu().tolist(), labels.cpu().tolist()):
+                counts[inv[label]][1] += 1
+                if pred == label:
+                    counts[inv[label]][0] += 1
+    return {cls: (c / t * 100 if t else 0.0) for cls, (c, t) in counts.items()}
+
+
 def train_and_eval(args):
     device = torch.device(args.device)
     set_seed(args.seed)
@@ -122,6 +139,7 @@ def train_and_eval(args):
         best_val_wa = -1
         best_state = None
 
+        print(f"[Fold {fold}/5]")
         for epoch in range(args.epochs):
             train_loss = train_one_epoch(model, optimizer, criterion, train_loader, device, scheduler=scheduler)
 
@@ -134,12 +152,15 @@ def train_and_eval(args):
                 best_state = {k: v.cpu() for k, v in model.state_dict().items()}
 
             if wb_run:
+                current_lr = optimizer.param_groups[0]["lr"]
                 wandb.log(
                     {
                         f"fold_{fold}/train_loss": train_loss / len(train_loader),
                         f"fold_{fold}/val_WA": val_wa,
                         f"fold_{fold}/val_UA": val_ua,
                         f"fold_{fold}/val_F1": val_f1,
+                        f"fold_{fold}/best_val_WA": best_val_wa,
+                        f"fold_{fold}/lr": current_lr,
                         "epoch": epoch + 1,
                         "fold": fold,
                     }
@@ -151,25 +172,30 @@ def train_and_eval(args):
         test_wa, test_ua, test_f1 = emo_utils.validate_and_test(
             model, test_loader, device, num_classes=len(LABEL_DICT)
         )
+        per_class = per_class_accuracy(model, test_loader, device, LABEL_DICT)
+        per_class_str = "  ".join(f"{cls}={acc:.1f}%" for cls, acc in per_class.items())
+        print(f"  test  WA={test_wa:.2f}%  UA={test_ua:.2f}%  F1={test_f1:.2f}%  [{per_class_str}]")
 
         wa_sum += test_wa
         ua_sum += test_ua
         f1_sum += test_f1
 
-        ckpt_path = output_dir / f"iemocap_fold{fold}.pth"
-        torch.save(model.state_dict(), ckpt_path)
-
         if wb_run:
             wandb.summary[f"fold_{fold}/test_WA"] = test_wa
             wandb.summary[f"fold_{fold}/test_UA"] = test_ua
             wandb.summary[f"fold_{fold}/test_F1"] = test_f1
-            artifact = wandb.Artifact(
-                name=f"iemocap-fold{fold}-checkpoint",
-                type="model",
-                metadata={"fold": fold},
+            wandb.summary[f"fold_{fold}/best_val_WA"] = best_val_wa
+            for cls, acc in per_class.items():
+                wandb.summary[f"fold_{fold}/test_acc_{cls}"] = acc
+            wandb.log(
+                {
+                    "test/WA": test_wa,
+                    "test/UA": test_ua,
+                    "test/F1": test_f1,
+                    **{f"test/acc_{cls}": acc for cls, acc in per_class.items()},
+                    "fold": fold,
+                }
             )
-            artifact.add_file(str(ckpt_path))
-            wandb.log_artifact(artifact)
 
     avg_wa = wa_sum / len(splits)
     avg_ua = ua_sum / len(splits)

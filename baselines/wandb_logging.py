@@ -1,6 +1,8 @@
 import atexit
 import logging
 import os
+import signal
+import sys
 import uuid
 from numbers import Number
 
@@ -36,6 +38,20 @@ def _is_master_process() -> bool:
 def _finish_wandb() -> None:
     if wandb is not None and wandb.run is not None:
         wandb.finish()
+
+
+def _handle_sigterm(signum, frame) -> None:
+    """Mark run as preempted (not crashed) on spot interruption, then exit."""
+    if wandb is not None and wandb.run is not None:
+        try:
+            wandb.mark_preempting()
+        except Exception:
+            pass
+        try:
+            wandb.finish(exit_code=0)
+        except Exception:
+            pass
+    sys.exit(0)
 
 
 def _get_or_create_run_id() -> str | None:
@@ -98,6 +114,7 @@ def _get_wandb_run():
         _wandb_run = None
         return None
     atexit.register(_finish_wandb)
+    signal.signal(signal.SIGTERM, _handle_sigterm)
     return _wandb_run
 
 
