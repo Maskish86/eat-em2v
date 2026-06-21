@@ -47,7 +47,7 @@ jobs:
           VOLUME_ID: ${{ secrets.VOLUME_ID }}
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
         run: |
-          CMD="bash -c 'export RUN_NAME=${{ inputs.run_name }} WANDB_API_KEY=${WANDB_API_KEY} RUNPOD_API_KEY=${RUNPOD_API_KEY}; /workspace/eat-em2v/scripts/pretrain_eat_em2v_style.sh optimization.lr=[${{ inputs.learning_rate }}] optimizer.groups.default.lr_float=${{ inputs.learning_rate }} model.modalities.image.mask_prob=${{ inputs.mask_prob }} model.use_dino_head=${{ inputs.use_dino_head }} model.cls_loss=${{ inputs.cls_loss }}'"
+          CMD="bash -c 'export RUN_NAME=${{ inputs.run_name }} WANDB_API_KEY=${WANDB_API_KEY} RUNPOD_API_KEY=${RUNPOD_API_KEY}; chmod +x /workspace/eat-em2v/scripts/pretrain_eat_em2v_style.sh; /workspace/eat-em2v/scripts/pretrain_eat_em2v_style.sh optimization.lr=[${{ inputs.learning_rate }}] optimizer.groups.default.lr_float=${{ inputs.learning_rate }} model.modalities.image.mask_prob=${{ inputs.mask_prob }} model.use_dino_head=${{ inputs.use_dino_head }} model.cls_loss=${{ inputs.cls_loss }}'"
 
           RESPONSE=$(curl --silent --request POST \
             --header 'content-type: application/json' \
