@@ -56,7 +56,7 @@ jobs:
               --arg vol "$VOLUME_ID" \
               --arg cmd "$CMD" \
               --arg gpu "${{ inputs.gpu_type }}" \
-              '{query: "mutation { podRentInterruptable(input: { bidPerGpu: 1.39, cloudType: ALL, gpuCount: 1, containerDiskInGb: 40, minVcpuCount: 2, minMemoryInGb: 15, gpuTypeId: \"\($gpu)\", name: \"eat-em2v\", imageName: \"runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04\", networkVolumeId: \"\($vol)\", volumeMountPath: \"/workspace\", dataCenterId: \"us-md-1\", dockerArgs: \"\($cmd)\" }) { id } }"}'
+              '{query: "mutation { podRentInterruptable(input: { bidPerGpu: 1.39, cloudType: ALL, gpuCount: 1, containerDiskInGb: 40, minVcpuCount: 2, minMemoryInGb: 15, gpuTypeId: \"\($gpu)\", name: \"eat-em2v\", imageName: \"runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04\", networkVolumeId: \"\($vol)\", volumeMountPath: \"/workspace\", dockerArgs: \"\($cmd)\" }) { id } }"}'
             )")
 
           echo "RunPod response: $RESPONSE"
