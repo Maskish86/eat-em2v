@@ -40,6 +40,7 @@ on:
 jobs:
   start:
     runs-on: ubuntu-latest
+    timeout-minutes: 370
     steps:
       - name: Launch pod
         env:
@@ -49,27 +50,33 @@ jobs:
         run: |
           CMD="bash -c 'export RUN_NAME=${{ inputs.run_name }} WANDB_API_KEY=${WANDB_API_KEY} RUNPOD_API_KEY=${RUNPOD_API_KEY}; chmod +x /workspace/eat-em2v/scripts/pretrain_eat_em2v_style.sh; /workspace/eat-em2v/scripts/pretrain_eat_em2v_style.sh optimization.lr=[${{ inputs.learning_rate }}] optimizer.groups.default.lr_float=${{ inputs.learning_rate }} model.modalities.image.mask_prob=${{ inputs.mask_prob }} model.use_dino_head=${{ inputs.use_dino_head }} model.cls_loss=${{ inputs.cls_loss }}'"
 
-          RESPONSE=$(curl --silent --request POST \
-            --header 'content-type: application/json' \
-            --url "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
-            --data "$(jq -n \
-              --arg vol "$VOLUME_ID" \
-              --arg cmd "$CMD" \
-              --arg gpu "${{ inputs.gpu_type }}" \
-              '{query: "mutation { podRentInterruptable(input: { bidPerGpu: 1.49, cloudType: ALL, gpuCount: 1, containerDiskInGb: 40, minVcpuCount: 2, minMemoryInGb: 15, gpuTypeId: \"\($gpu)\", name: \"eat-em2v\", imageName: \"runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04\", networkVolumeId: \"\($vol)\", volumeMountPath: \"/workspace\", dockerArgs: \"\($cmd)\" }) { id } }"}'
-            )")
+          DEADLINE=$(( $(date +%s) + 21600 ))
+          POD_ID=""
 
-          echo "RunPod response: $RESPONSE"
+          while [ $(date +%s) -lt $DEADLINE ]; do
+            RESPONSE=$(curl --silent --request POST \
+              --header 'content-type: application/json' \
+              --url "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+              --data "$(jq -n \
+                --arg vol "$VOLUME_ID" \
+                --arg cmd "$CMD" \
+                --arg gpu "${{ inputs.gpu_type }}" \
+                '{query: "mutation { podRentInterruptable(input: { bidPerGpu: 1.49, cloudType: ALL, gpuCount: 1, containerDiskInGb: 40, minVcpuCount: 2, minMemoryInGb: 15, gpuTypeId: \"\($gpu)\", name: \"eat-em2v\", imageName: \"runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04\", networkVolumeId: \"\($vol)\", volumeMountPath: \"/workspace\", dockerArgs: \"\($cmd)\" }) { id } }"}'
+              )")
 
-          POD_ID=$(echo "$RESPONSE" | jq -r '.data.podRentInterruptable.id // empty')
-          ERROR=$(echo "$RESPONSE" | jq -r '.errors[0].message // empty')
+            echo "RunPod response: $RESPONSE"
 
-          if [ -n "$POD_ID" ]; then
-            echo "Pod launched: $POD_ID"
-          elif [ -n "$ERROR" ]; then
-            echo "RunPod error: $ERROR" >&2
-            exit 1
-          else
-            echo "Unknown error. Full response: $RESPONSE" >&2
+            POD_ID=$(echo "$RESPONSE" | jq -r '.data.podRentInterruptable.id // empty')
+            if [ -n "$POD_ID" ]; then
+              echo "Pod launched: $POD_ID"
+              break
+            fi
+
+            echo "No spot capacity, retrying in 60s..."
+            sleep 300
+          done
+
+          if [ -z "$POD_ID" ]; then
+            echo "No spot capacity after 6 hours. Give up." >&2
             exit 1
           fi
