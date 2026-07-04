@@ -72,7 +72,7 @@ jobs:
               break
             fi
 
-            echo "No spot capacity, retrying in 60s..."
+            echo "No spot capacity, retrying in 5min..."
             sleep 300
           done
 

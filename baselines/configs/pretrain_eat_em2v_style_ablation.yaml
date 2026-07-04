@@ -1,4 +1,6 @@
 # @package _group_
+# Ablation config: shorter training for hyperparameter search.
+# Inherits all settings from pretrain_eat_em2v_style.yaml except where noted.
 
 common:
   fp16: false
@@ -9,7 +11,7 @@ common:
   seed: 42
 
 checkpoint:
-  save_interval: 5
+  save_interval: 2
   no_epoch_checkpoints: false
 
 task:
@@ -24,9 +26,9 @@ task:
   target_length: 1024
   flexible_mask: false
   wandb_project: emotion2vec-eat
-  wandb_run_name: eat-ser-pretrain
-  wandb_group: eat-ser-pretrain-seed42
-  wandb_job_type: pretrain
+  wandb_run_name: eat-ser-pretrain-ablation
+  wandb_group: eat-ser-pretrain-ablation
+  wandb_job_type: pretrain-ablation
   wandb_enable: true
 
 dataset:
@@ -56,9 +58,9 @@ criterion:
     - dino_active_prototypes
 
 optimization:
-  max_update: 150_000
+  max_update: 60_000  # ablation: 150_000 → 60_000
   lr: [ 1e-4 ]
-  max_epoch: 20
+  max_epoch: 8        # ablation: 20 → 8
   clip_norm: 4
 
 optimizer:
@@ -72,7 +74,7 @@ optimizer:
         weight_decay: 1e-2
       lr_scheduler:
         _name: cosine
-        warmup_updates: 20_000  # scale to dataset size
+        warmup_updates: 8_000  # scaled down from 20_000 proportionally (60k/150k * 20k)
         min_lr: 1e-5
 
 lr_scheduler: pass_through
@@ -82,7 +84,7 @@ model:
 
   ema_decay: 0.9998
   ema_end_decay: 0.99999
-  ema_anneal_end_step: 100_000
+  ema_anneal_end_step: 40_000  # scaled down from 100_000 proportionally
   instance_norm_target_layer: true
   layer_norm_target_layer: false
   layer_norm_targets: true
@@ -116,7 +118,7 @@ model:
   dino_bottleneck_dim: 256
   dino_teacher_temp: 0.04
   dino_teacher_temp_warmup_init: 0.07
-  dino_teacher_temp_warmup_steps: 15000
+  dino_teacher_temp_warmup_steps: 6000  # scaled down from 15000 proportionally (60k/150k)
   dino_center_momentum: 0.9
   softmax_temperature_student: 0.1
 

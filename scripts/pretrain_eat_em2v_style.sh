@@ -2,11 +2,16 @@
 # EAT-em2v style pretraining entry point.
 #
 # Usage:
-#   bash scripts/pretrain_eat_em2v_style.sh [HYDRA_OVERRIDES...]
+#   bash scripts/pretrain_eat_em2v_style.sh [--ablation] [HYDRA_OVERRIDES...]
 #
-# Examples (ablation overrides passed directly to Hydra):
+# Flags:
+#   --ablation  Use pretrain_eat_em2v_style_ablation config (60k steps, 8 epochs)
+#
+# Examples:
+#   bash scripts/pretrain_eat_em2v_style.sh
+#   bash scripts/pretrain_eat_em2v_style.sh --ablation
+#   bash scripts/pretrain_eat_em2v_style.sh --ablation model.layer_decay=0.55
 #   bash scripts/pretrain_eat_em2v_style.sh optimization.lr=[5e-5]
-#   bash scripts/pretrain_eat_em2v_style.sh checkpoint.save_dir=/path/to/run model.encoder_layers=8
 #
 # Env vars:
 #   DATA_ROOT  — repo parent dir; inferred automatically if not set
@@ -18,6 +23,17 @@
 #   3. Train from scratch
 
 set -e
+
+ABLATION=false
+PASSTHROUGH_ARGS=()
+for arg in "$@"; do
+  if [ "$arg" = "--ablation" ]; then
+    ABLATION=true
+  else
+    PASSTHROUGH_ARGS+=("$arg")
+  fi
+done
+set -- "${PASSTHROUGH_ARGS[@]}"
 
 if [ -z "${DATA_ROOT:-}" ]; then
   REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -43,6 +59,14 @@ stop_pod() {
 trap stop_pod EXIT
 
 pip install --no-cache-dir wandb fairseq==0.12.2 soundfile torchaudio h5py tensorboardX scikit_learn timm
+python3 -c "
+import hydra._internal.utils as h
+src = open(h.__file__).read()
+open(h.__file__, 'w').write(src.replace(
+    'print_exception(etype=None, value=ex, tb=final_tb)',
+    'print_exception(type(ex), ex, final_tb)'
+))
+"
 
 cd "${DATA_ROOT}"/eat-em2v
 git submodule update --init --recursive
@@ -52,7 +76,13 @@ export WANDB_DIR="${DATA_ROOT}/wandb"
 
 # RUN_NAME controls both the checkpoint save directory and the wandb run name.
 # Set via env var to isolate ablation runs: RUN_NAME=ablation_lr5e5 bash ...
-RUN_NAME="${RUN_NAME:-ser_pretrained}"
+if [ "$ABLATION" = true ]; then
+  CONFIG_NAME="pretrain_eat_em2v_style_ablation"
+  RUN_NAME="${RUN_NAME:-ser_pretrained_ablation}"
+else
+  CONFIG_NAME="pretrain_eat_em2v_style"
+  RUN_NAME="${RUN_NAME:-ser_pretrained}"
+fi
 export WANDB_RUN_ID_FILE="${DATA_ROOT}/wandb/run_id_${RUN_NAME}"
 CHECKPOINT_DIR="${DATA_ROOT}/checkpoints/${RUN_NAME}"
 PRETRAINED_CKPT="${DATA_ROOT}/checkpoints/pretrained/EAT-base_epoch30_pt.pt"
@@ -75,7 +105,7 @@ MANIFEST_ROOT="${DATA_ROOT}/manifests/pretrain"
 
 python -m fairseq_cli.hydra_train -m \
     --config-dir ${DATA_ROOT}/eat-em2v/baselines/configs \
-    --config-name pretrain_eat_em2v_style \
+    --config-name ${CONFIG_NAME} \
     common.user_dir=${DATA_ROOT}/eat-em2v/baselines \
     checkpoint.save_dir="${CHECKPOINT_DIR}" \
     "${RESTORE_ARG[@]}" \

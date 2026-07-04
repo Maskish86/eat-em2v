@@ -158,6 +158,8 @@ class Data2VecMultiConfig(FairseqDataclass):
     dino_hidden_dim: int = field(default=2048, metadata={"help": "DINOHead hidden dim"})
     dino_bottleneck_dim: int = field(default=256, metadata={"help": "DINOHead bottleneck dim"})
     dino_teacher_temp: float = field(default=0.04, metadata={"help": "teacher sharpening temperature for DINOLoss"})
+    dino_teacher_temp_warmup_init: float = field(default=0.04, metadata={"help": "initial teacher temp for warmup (set higher than dino_teacher_temp to enable warmup)"})
+    dino_teacher_temp_warmup_steps: int = field(default=0, metadata={"help": "number of steps to linearly anneal teacher temp from warmup_init to dino_teacher_temp; 0 disables warmup"})
     dino_center_momentum: float = field(default=0.9, metadata={"help": "EMA momentum for DINOLoss center buffer"})
 
 
@@ -730,8 +732,14 @@ class Data2VecMultiModel(BaseFairseqModel):
             else:
                 teacher_logits_rep = teacher_cls_logits
 
+            if self.cfg.dino_teacher_temp_warmup_steps > 0 and self.num_updates < self.cfg.dino_teacher_temp_warmup_steps:
+                warmup_progress = self.num_updates / self.cfg.dino_teacher_temp_warmup_steps
+                teacher_temp = self.cfg.dino_teacher_temp_warmup_init + warmup_progress * (self.cfg.dino_teacher_temp - self.cfg.dino_teacher_temp_warmup_init)
+            else:
+                teacher_temp = self.cfg.dino_teacher_temp
+
             teacher_soft = self.dino_loss_fn.softmax_center_teacher(
-                teacher_logits_rep, self.cfg.dino_teacher_temp
+                teacher_logits_rep, teacher_temp
             )
             self.dino_loss_fn.update_center(teacher_cls_logits)  # B samples (not repeated)
 
