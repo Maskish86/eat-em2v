@@ -59,14 +59,7 @@ stop_pod() {
 trap stop_pod EXIT
 
 pip install --no-cache-dir wandb fairseq==0.12.2 soundfile torchaudio h5py tensorboardX scikit_learn timm
-python3 -c "
-import hydra._internal.utils as h
-src = open(h.__file__).read()
-open(h.__file__, 'w').write(src.replace(
-    'print_exception(etype=None, value=ex, tb=final_tb)',
-    'print_exception(type(ex), ex, final_tb)'
-))
-"
+
 
 cd "${DATA_ROOT}"/eat-em2v
 git submodule update --init --recursive

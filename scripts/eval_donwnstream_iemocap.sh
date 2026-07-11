@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: baselines/scripts/eval_donwnstream_iemocap.sh [path/to/env]
-ENV_FILE="${1:-baselines/configs/eval_donwnstream_iemocap_eat_em2v.env}"
-
-if [ ! -f "${ENV_FILE}" ]; then
-  echo "Env file not found: ${ENV_FILE}" >&2
-  exit 1
-fi
-
 # If DATA_ROOT is not set, infer it from repo location
 if [ -z "${DATA_ROOT:-}" ]; then
   REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   DATA_ROOT="$(dirname "${REPO_DIR}")"
   export DATA_ROOT
   echo "[INFO] DATA_ROOT not set; inferred as ${DATA_ROOT}"
+fi
+
+# Usage: baselines/scripts/eval_donwnstream_iemocap.sh [path/to/env]
+ENV_FILE="${1:-${DATA_ROOT}/eat-em2v/baselines/configs/eval_donwnstream_iemocap_eat_em2v.env}"
+
+if [ ! -f "${ENV_FILE}" ]; then
+  echo "Env file not found: ${ENV_FILE}" >&2
+  exit 1
 fi
 
 MAIN_ENV="${DATA_ROOT}/eat-em2v/.env"
