@@ -132,6 +132,22 @@ def main():
     if args.clone_batch is not None:
         model.cfg.clone_batch = args.clone_batch
 
+    # EAT's block-mask branch (images.py compute_block_mask_2d, mask_length>1)
+    # builds the mask on CPU and never moves it to x.device -> gather() device
+    # mismatch. Training avoids this by feeding dataset-precomputed masks that
+    # fairseq moves with the batch; this probe generates masks inline, so patch
+    # make_maskinfo to co-locate the mask with x. (Submodule edits would be
+    # reverted by `git submodule update`, so patch at runtime here.)
+    from external.EAT.models.base import ModalitySpecificEncoder
+    _orig_make_maskinfo = ModalitySpecificEncoder.make_maskinfo
+
+    def _make_maskinfo_on_device(self, x, mask, shape=None):
+        if torch.is_tensor(mask):
+            mask = mask.to(x.device)
+        return _orig_make_maskinfo(self, x, mask, shape)
+
+    ModalitySpecificEncoder.make_maskinfo = _make_maskinfo_on_device
+
     # --- register variance taps -------------------------------------------
     taps = {}
 

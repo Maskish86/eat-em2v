@@ -105,7 +105,7 @@ model:
   activation_dropout: 0
 
   supported_modality: IMAGE
-  cls_loss: 1
+  cls_loss: 3
   recon_loss: 1
   d2v_loss: 0
 

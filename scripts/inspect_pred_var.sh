@@ -18,7 +18,7 @@ if [ -z "${DATA_ROOT:-}" ]; then
   echo "[INFO] DATA_ROOT not set; inferred as ${DATA_ROOT}"
 fi
 
-ENV_FILE="${1:-${DATA_ROOT}/eat-em2v/baselines/configs/eval_donwnstream_iemocap_eat_em2v.env}"
+ENV_FILE="${1:-${DATA_ROOT}/eat-em2v/baselines/configs/eval_downstream_iemocap_eat_em2v.env}"
 
 if [ ! -f "${ENV_FILE}" ]; then
   echo "Env file not found: ${ENV_FILE}" >&2
