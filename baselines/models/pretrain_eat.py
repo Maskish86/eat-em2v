@@ -1011,18 +1011,24 @@ class Data2VecMultiModel(BaseFairseqModel):
                 prosody_target = prosody_bt.repeat_interleave(n_freq, dim=1)[col]
                 sel = col[masked_b]
 
-            # d2v_loss scales by 1/sqrt(dim) and sums over it, so a 256-dim recon
-            # term lands sqrt(256/3) ~ 9.24x heavier than a 3-dim one. Without
-            # this, prosody_loss=1.0 is ~9x weaker than recon=1 and the sweep grid
-            # means nothing. Applied at the loss term rather than via
-            # cfg.loss_scale, which is global -- and skipped entirely when
-            # loss_scale is set, since then both terms share one constant and
-            # there is no sqrt(dim) imbalance to correct.
-            if self.loss_scale is None:
-                recon_dim = patch_frames ** 2 * feature_extractor.modality_cfg.in_chans
-                dim_parity = math.sqrt(recon_dim / 3)
-            else:
-                dim_parity = 1.0
+            # d2v_loss SUMS over the feature dim after applying `scale`, so the
+            # per-dim count never cancels and prosody needs an explicit correction
+            # to sit at parity with recon. The factor depends on which scale branch
+            # d2v_loss takes (:846-852):
+            #
+            #   loss_scale is None -> scale = 1/sqrt(D)
+            #       recon   = (1/16)*256*e = 16*e
+            #       prosody = (1/sqrt3)*3*e = sqrt(3)*e     -> ratio sqrt(256/3) ~ 9.24
+            #   loss_scale = c     -> scale = c for BOTH terms
+            #       recon   = c*256*e
+            #       prosody = c*3*e                         -> ratio 256/3 ~ 85.3
+            #
+            # The shared constant does NOT remove the imbalance -- it removes the
+            # sqrt, making it strictly worse. Applied at the loss term rather than
+            # via cfg.loss_scale, which is global and would rescale recon and d2v
+            # too.
+            recon_dim = patch_frames ** 2 * feature_extractor.modality_cfg.in_chans
+            dim_parity = (recon_dim / 3) if self.loss_scale is not None else math.sqrt(recon_dim / 3)
 
             # An unlucky mask draw or a batch of very short utterances can leave no
             # fully-masked valid column at all. d2v_loss would reduce an empty

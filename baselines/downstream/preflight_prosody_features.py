@@ -30,6 +30,16 @@ Report against the majority-class rate under the same folds -- NOT 25%. IEMOCAP'
 The descriptors are imported from pretrain_eat.py rather than reimplemented, so
 Step 0 (de-normalization), the flux t=0 convention and the floor(n_frames/16)
 patch rule cannot drift between this probe and the training path.
+
+CAVEAT -- transductive scaling. The z-score written to disk is fit over all five
+sessions, but eval_downstream_iemocap.py holds one session out per fold, so each
+fold's test statistics are in its own training features. This is deliberate and
+judged acceptable: the scaling uses NO labels and is a per-dimension affine, which
+a linear probe with a learned first layer can absorb, so it cannot manufacture
+class-discriminative signal -- it can only affect optimization conditioning. It is
+still not zero. If the decision this probe drives lands near the floor, re-run
+with --no_zscore (leak-free) before concluding either way, and report which
+variant the decision was made on.
 """
 
 import argparse
@@ -108,9 +118,12 @@ def main():
     ap.add_argument(
         "--no_zscore",
         action="store_true",
-        help="Skip the corpus z-score. Only for inspecting raw values -- the linear "
-             "probe conditions badly on unscaled descriptors (log-energy ~1e1, "
-             "centroid ~1e2, flux ~1e1 with very different spreads).",
+        help="Skip the corpus z-score, removing the transductive-scaling caveat "
+             "below. Use as the confirmatory run if the WA lands near the floor. "
+             "Note BaseModel is Linear->ReLU with no input normalization, so raw "
+             "descriptors (log-energy ~1e1, centroid ~1e2, flux ~1e1, very "
+             "different spreads) condition the probe badly -- a low WA here is not "
+             "by itself evidence the target is uninformative.",
     )
     ap.add_argument("--batch_size", type=int, default=16)
     ap.add_argument("--num_workers", type=int, default=4)

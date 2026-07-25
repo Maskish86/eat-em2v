@@ -53,30 +53,60 @@ def main():
     ap.add_argument("--output_json", required=True)
     ap.add_argument("--target_length", type=int, default=1024)
     ap.add_argument("--patch_size", type=int, default=16)
-    ap.add_argument("--sample_rate", type=int, default=16000)
     ap.add_argument("--norm_mean", type=float, default=-4.268)
     ap.add_argument("--norm_std", type=float, default=4.569)
     ap.add_argument("--batch_size", type=int, default=32)
     ap.add_argument("--num_workers", type=int, default=8)
     ap.add_argument("--max_utts", type=int, default=None, help="Stop after N utterances (smoke test only).")
+    # These MUST match what mae_image_dataset.py:126-142 passes for the run whose
+    # constants these become. They are surfaced as flags rather than hardcoded
+    # because the task exposes them (h5_format, downsr_16hz) -- but the defaults
+    # are the training values, not this script's convenience.
+    ap.add_argument("--sample_rate", type=int, default=32000, help="mae_image_dataset passes 32000.")
+    ap.add_argument("--max_sample_size", type=int, default=325000)
+    ap.add_argument("--min_sample_size", type=int, default=10000,
+                    help="Training skips shorter utterances; including them here biases the constants.")
+    ap.add_argument("--h5_format", action="store_true", help="Set if task.h5_format is set for the run.")
+    ap.add_argument("--no_downsr_16hz", action="store_true", help="Unset if task.downsr_16hz is false for the run.")
     args = ap.parse_args()
 
-    # train_mode='valid' is deliberate, not incidental: it disables `noise` and
-    # `roll_mag_aug`, both of which are gated on train_mode=='train'. Additive
-    # noise would destroy the exact-constancy the pad detection relies on, and the
-    # time-axis roll would stop padding being trailing at all.
+    # The dataset must be built the way TRAINING builds it
+    # (baselines/data/mae_image_dataset.py:126-142), not the way that is
+    # convenient here -- these constants are baked into every subsequent
+    # prosody_norm=corpus run, and a divergence is invisible in the training
+    # curves. Differences that matter:
+    #   min_sample_size  training skips <10000-sample utterances; if this script
+    #                    includes them the mean/std describe a different corpus
+    #   h5_format        on an h5 manifest, False makes every read fall through to
+    #                    sf.read("<root>/10.h5/x.wav"), retry 3x and raise
+    #   sample_rate      postprocess() raises on a mismatch unless downsr_16hz
+    #                    rewrites it first
+    #
+    # train_mode='valid' is the one deliberate divergence: it disables `noise` and
+    # `roll_mag_aug`, both gated on train_mode=='train'. Additive noise would
+    # destroy the exact-constancy the pad detection relies on, and the time-axis
+    # roll would stop padding being trailing at all.
     dataset = FileAudioDataset(
         manifest_path=args.manifest,
         sample_rate=args.sample_rate,
+        max_sample_size=args.max_sample_size,
+        min_sample_size=args.min_sample_size,
         shuffle=False,
         pad=False,
-        normalize=False,
+        normalize=True,
+        num_buckets=0,
+        compute_mask=False,
+        h5_format=args.h5_format,
+        downsr_16hz=not args.no_downsr_16hz,
         wav2fbank=True,
         target_length=args.target_length,
-        downsr_16hz=True,
+        roll_mag_aug=False,
+        noise=False,
         train_mode="valid",
     )
     assert not getattr(dataset, "noise", False), "noise must be off for corpus statistics"
+    print(f"{len(dataset)} utterances after min_sample_size={args.min_sample_size} filtering "
+          f"({len(getattr(dataset, 'skipped_indices', []))} skipped)")
 
     n_time = args.target_length // args.patch_size
     denorm_scale = args.norm_std * 2

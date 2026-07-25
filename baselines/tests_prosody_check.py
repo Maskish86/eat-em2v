@@ -5,11 +5,17 @@ interpolation baseline is exact on a linear target.
 """
 import ast
 import math
+import pathlib
 import types
 import torch
 
+# Repo root from __file__, so this runs on the training pod and in CI too --
+# it is the only executable check of these helpers, which are loaded via ast
+# specifically to avoid importing fairseq.
+REPO = pathlib.Path(__file__).resolve().parent.parent
+
 # --- load the helper functions out of pretrain_eat.py without importing fairseq
-src = open("/home/masak/ml-research/eat-em2v/baselines/models/pretrain_eat.py").read()
+src = (REPO / "baselines/models/pretrain_eat.py").read_text()
 tree = ast.parse(src)
 wanted = {"prosody_valid_time", "compute_prosody", "prosody_interp_baseline", "_r2"}
 mod = ast.Module(
@@ -143,7 +149,7 @@ assert p_none[:, 0].abs().max() > 1.0, "log-energy looks normalized -- 'none' is
 print("ok  compute_prosody[none]: raw values, pad still zeroed")
 
 # --- summary_stats, loaded the same fairseq-free way as the helpers above
-pf_src = open("/home/masak/ml-research/eat-em2v/baselines/downstream/preflight_prosody_features.py").read()
+pf_src = (REPO / "baselines/downstream/preflight_prosody_features.py").read_text()
 pf_tree = ast.parse(pf_src)
 pf_mod = ast.Module(
     body=[n for n in pf_tree.body if isinstance(n, ast.FunctionDef) and n.name == "summary_stats"],
@@ -183,7 +189,7 @@ print("ok  summary_stats: padded patches excluded from min/max")
 # --- ridge closed form (numpy only, safe to import directly)
 import importlib.util as _ilu
 _spec = _ilu.spec_from_file_location(
-    "pf_r2", "/home/masak/ml-research/eat-em2v/baselines/downstream/preflight_prosody_r2.py"
+    "pf_r2", str(REPO / "baselines/downstream/preflight_prosody_r2.py")
 )
 _pf_r2 = _ilu.module_from_spec(_spec)
 _spec.loader.exec_module(_pf_r2)
