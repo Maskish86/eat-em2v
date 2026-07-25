@@ -12,7 +12,7 @@ import torch.distributed as dist
 import numpy as np
 
 from dataclasses import dataclass, field
-from typing import Optional, Callable
+from typing import Optional, Callable, List
 from functools import partial
 from omegaconf import II
 from enum import Enum, auto
@@ -43,11 +43,150 @@ from external.dinov2.dinov2.loss.dino_clstoken_loss import DINOLoss
 
 logger = logging.getLogger(__name__)
 
-# we follow the work of data2vec 2.0 on image modality and Audio-MAE in EAT 
+# we follow the work of data2vec 2.0 on image modality and Audio-MAE in EAT
 class Modality(Enum):
     AUDIO = auto()
     IMAGE = auto()
     TEXT = auto()
+
+
+# ---------------------------------------------------------------------------
+# Emotion-correlated prosody target (see emotion-correlated-prosody.md)
+#
+# Three analytic per-frame descriptors -- log-energy, spectral centroid,
+# spectral flux -- pooled to the patch grid's time resolution and predicted at
+# masked positions. Label-free: computed from the spectrogram the model already
+# ingests.
+# ---------------------------------------------------------------------------
+
+
+def prosody_valid_time(source, pad_value, n_time_patches, patch_frames, tol=1e-2):
+    """Route B pad detection: which time-patches are entirely non-padding.
+
+    Padding is zero-padded in raw log-mel *before* the dataset's global
+    normalization (raw_audio_dataset.py:396-410), so padded frames sit at exactly
+    `pad_value` across all 128 mel bins -- a flatness real speech never produces.
+
+    Tested on the *normalized* `source` with a tolerance, deliberately:
+      - training runs in bf16 (common.bf16), whose ulp near pad_value is ~2e-3,
+        so an exact comparison never fires and every frame reads as valid;
+      - de-normalizing first would multiply that error by ~9.14.
+    tol=1e-2 is ~5 bf16 ulps here, and corresponds to all 128 bins agreeing to
+    within ~0.09 in log-mel -- far flatter than any real frame.
+
+    A time-patch is valid only if it lies entirely within the valid region, so the
+    patch straddling n_frames is discarded (at most 160ms).
+    """
+    pad_frame = ((source - pad_value).abs() < tol).all(dim=-1)  # (B, T)
+    # mark the *trailing* run of pad frames only: cumprod from the end stays 1
+    # while every frame seen so far (scanning backwards) is padding.
+    trailing_pad = torch.cumprod(pad_frame.flip(-1).long(), dim=-1).flip(-1)
+    n_frames = (1 - trailing_pad).sum(-1)  # (B,)
+    n_valid = torch.div(n_frames, patch_frames, rounding_mode="floor")
+
+    idx = torch.arange(n_time_patches, device=source.device)
+    return idx.unsqueeze(0) < n_valid.unsqueeze(1)  # (B, n_time_patches)
+
+
+def compute_prosody(S_log, valid_time, n_time_patches, patch_frames, norm, corpus_mean=None, corpus_std=None):
+    """Analytic prosody descriptors per time-patch.
+
+    S_log:      (B, T, M) raw natural-log mel -- NOT the globally normalized `source`.
+    valid_time: (B, n_time_patches) bool, from prosody_valid_time (Route B) or a
+                threaded n_frames (Route A). Kept as a parameter so the two routes
+                differ in one call site only.
+    Returns prosody, shape (B, 3, n_time_patches).
+    """
+    B, T, M = S_log.shape
+
+    log_energy = torch.logsumexp(S_log, dim=-1)  # (B, T)
+
+    bins = torch.arange(M, device=S_log.device, dtype=S_log.dtype)
+    centroid = (torch.softmax(S_log, dim=-1) * bins).sum(-1)  # (B, T)
+
+    # S_{-1} := S_0, so flux[0] == 0. Chosen explicitly: dropping frame 0 instead
+    # would misalign every patch boundary by one frame.
+    delta = S_log[:, 1:] - S_log[:, :-1]
+    flux = torch.cat(
+        [S_log.new_zeros(B, 1), torch.linalg.vector_norm(delta, dim=-1)], dim=1
+    )  # (B, T)
+
+    p = torch.stack([log_energy, centroid, flux], dim=1)  # (B, 3, T)
+    p = p.view(B, 3, n_time_patches, patch_frames).mean(-1)  # (B, 3, n_time_patches)
+
+    vt = valid_time.unsqueeze(1).to(p.dtype)  # (B, 1, n_time_patches)
+    if norm == "instance":
+        # per-utterance, per-descriptor over time -- valid patches only, so the
+        # pad plateau cannot pull the statistics.
+        cnt = vt.sum(-1, keepdim=True).clamp(min=1.0)
+        mean = (p * vt).sum(-1, keepdim=True) / cnt
+        var = (((p - mean) ** 2) * vt).sum(-1, keepdim=True) / cnt
+        p = (p - mean) / (var + 1e-6).sqrt()
+    elif norm == "corpus":
+        assert corpus_mean is not None and corpus_std is not None, (
+            "prosody_norm=corpus requires prosody_corpus_mean/std; compute them "
+            "offline over the pretraining manifest using this same function"
+        )
+        mean = torch.as_tensor(corpus_mean, device=p.device, dtype=p.dtype).view(1, 3, 1)
+        std = torch.as_tensor(corpus_std, device=p.device, dtype=p.dtype).view(1, 3, 1)
+        p = (p - mean) / (std + 1e-6)
+    elif norm == "none":
+        # Raw descriptors, in their natural units. Diagnostic-only: used by the
+        # pre-flight probe, where absolute level is the thing under test, and by
+        # the offline corpus-statistics job, which must see unnormalized values to
+        # produce the constants `corpus` mode consumes. Never set in a training
+        # config -- an unnormalized target would make PROSODY_DIM_PARITY (which
+        # assumes ~unit target variance) meaningless.
+        pass
+    else:
+        raise ValueError(f"unknown prosody_norm: {norm}")
+
+    return p * vt
+
+
+def prosody_interp_baseline(target, anchor):
+    """Linear interpolation of `target` from the nearest anchor columns.
+
+    target: (B, n_time, 3) -- the prosody target on the full time grid.
+    anchor: (B, n_time) bool -- columns the model can actually see.
+
+    Rows with no anchor at all are NOT handled here: they would yield an arbitrary
+    constant rather than an interpolation. The caller must exclude them (the loss
+    site does, via `col_t & anchor.any(-1, keepdim=True)`), so that the loss and
+    this baseline are scored on identical positions.
+
+    The triviality diagnostic: if the model cannot beat this, the prosody task is
+    solvable by interpolation and will not reshape the encoder at any lambda.
+    """
+    B, n_time, _ = target.shape
+    idx = torch.arange(n_time, device=target.device).unsqueeze(0).expand(B, -1)
+
+    left = torch.cummax(torch.where(anchor, idx, torch.full_like(idx, -1)), dim=1).values
+    right = torch.cummin(
+        torch.where(anchor, idx, torch.full_like(idx, n_time)).flip(1), dim=1
+    ).values.flip(1)
+
+    # columns with an anchor on only one side fall back to that side; the
+    # clamps make the gather safe and the weight below collapses to it.
+    has_left, has_right = left >= 0, right < n_time
+    l = left.clamp(min=0)
+    r = right.clamp(max=n_time - 1)
+    l = torch.where(has_left, l, r)
+    r = torch.where(has_right, r, l)
+
+    span = (r - l).clamp(min=1).to(target.dtype)
+    w = ((idx - l).to(target.dtype) / span).unsqueeze(-1)  # (B, n_time, 1)
+
+    y_l = torch.gather(target, 1, l.unsqueeze(-1).expand(-1, -1, 3))
+    y_r = torch.gather(target, 1, r.unsqueeze(-1).expand(-1, -1, 3))
+    return y_l * (1 - w) + y_r * w
+
+
+def _r2(pred, target):
+    """Pooled R^2 over the selected positions, averaged across descriptors."""
+    ss_res = ((pred - target) ** 2).sum(0)
+    ss_tot = ((target - target.mean(0, keepdim=True)) ** 2).sum(0)
+    return (1 - ss_res / (ss_tot + 1e-8)).mean()
 
 @dataclass
 class D2vModalitiesConfig(FairseqDataclass):
@@ -147,6 +286,31 @@ class Data2VecMultiConfig(FairseqDataclass):
     cls_loss: float = 0
     recon_loss: float = 0
     d2v_loss: float = 1
+
+    # emotion-correlated prosody target (see emotion-correlated-prosody.md).
+    # 0 disables it entirely; the existing path is untouched when off.
+    prosody_loss: float = field(
+        default=0,
+        metadata={"help": "weight for the analytic prosody target; 0 disables. 1.0 is parity with recon=1 (the dim-parity factor is applied internally)"},
+    )
+    prosody_norm: str = field(
+        default="instance",
+        metadata={"help": "'instance' (per-utterance over time, contour only) or 'corpus' (fixed stats, preserves absolute level). lambda does NOT transfer between modes"},
+    )
+    prosody_corpus_mean: Optional[List[float]] = field(
+        default=None, metadata={"help": "3 per-descriptor means for prosody_norm=corpus"}
+    )
+    prosody_corpus_std: Optional[List[float]] = field(
+        default=None, metadata={"help": "3 per-descriptor stds for prosody_norm=corpus"}
+    )
+    # must match the dataset's global normalization (raw_audio_dataset.py:407-408);
+    # the descriptors are nonlinear in S, so they are wrong on normalized input.
+    prosody_denorm_mean: float = -4.268
+    prosody_denorm_std: float = 4.569
+    prosody_diag_interval: int = field(
+        default=1000,
+        metadata={"help": "steps between triviality-diagnostic computations; match common.log_interval"},
+    )
 
     decoder_group: bool = False
 
@@ -273,7 +437,19 @@ class Data2VecMultiModel(BaseFairseqModel):
             self.recon_proj = None
             if cfg.recon_loss > 0:
                 self.recon_proj = nn.Linear(cfg.embed_dim, cfg.embed_dim//3)
-                
+
+            self.prosody_proj = None
+            if cfg.prosody_loss > 0:
+                self.prosody_proj = nn.Linear(cfg.embed_dim, 3)
+                # Route B recovers padding as the trailing run of exactly-constant
+                # frames. Augmentation destroys exact constancy and torch.roll
+                # circularly shifts padding off the tail, corrupting the targets
+                # with no error -- fail loudly instead.
+                assert not getattr(getattr(task, "cfg", None), "noise", False), (
+                    "prosody_loss requires task.noise=False (Route B pad detection); "
+                    "thread n_frames through the dataset (Route A) to lift this"
+                )
+
             self.student_dino_head = None
             self.teacher_dino_head = None
             self.dino_loss_fn = None
@@ -775,6 +951,121 @@ class Data2VecMultiModel(BaseFairseqModel):
                 self.d2v_loss(recon, target.float()) * self.cfg.recon_loss * sample_size
             )
 
+        if self.cfg.prosody_loss > 0:
+
+            with torch.no_grad():
+                n_time, n_freq = feature_extractor.hw          # (64, 8)
+                patch_frames = feature_extractor.modality_cfg.patch_size
+
+                src = source.squeeze(1)                            # (B, T, M)
+                denorm_scale = self.cfg.prosody_denorm_std * 2
+
+                # Pad detection runs on the NORMALIZED input with a tolerance:
+                # training is bf16, so an exact test never fires, and denormalizing
+                # first would amplify the error ~9.14x. See prosody_valid_time.
+                valid_time = prosody_valid_time(
+                    src, -self.cfg.prosody_denorm_mean / denorm_scale, n_time, patch_frames
+                )                                                  # (B, 64)
+
+                # Step 0: recover raw log-mel. The descriptors are nonlinear in S,
+                # so computing them on the normalized `source` yields a
+                # near-degenerate centroid -- silently, with no error.
+                # .float(): the batch arrives in bf16 (common.bf16) and the
+                # instance-norm variance below is not safe at that precision. This
+                # cannot recover bits already lost -- the descriptors are computed
+                # from an input quantized to ~8 mantissa bits, which adds a few
+                # percent of noise to `flux` in particular.
+                S_log = src.float() * denorm_scale + self.cfg.prosody_denorm_mean
+
+                prosody = compute_prosody(
+                    S_log,
+                    valid_time,
+                    n_time,
+                    patch_frames,
+                    self.cfg.prosody_norm,
+                    self.cfg.prosody_corpus_mean,
+                    self.cfg.prosody_corpus_std,
+                )                                                  # (B,3,64)
+                prosody_bt = prosody.transpose(1, 2)               # (B,64,3)
+
+                # BOTH source-derived tensors need the clone_batch repeat before
+                # they meet masked_b, which is (B*clone_batch, 512).
+                if self.cfg.clone_batch > 1:
+                    prosody_bt = prosody_bt.repeat_interleave(self.cfg.clone_batch, 0)
+                    valid_time = valid_time.repeat_interleave(self.cfg.clone_batch, 0)
+
+                # The target at time t is a function of the whole mel column at t,
+                # so a partially-visible column is readable rather than inferable.
+                # Restrict to columns whose every freq-patch is masked.
+                col_t = masked_b.view(-1, n_time, n_freq).all(-1) & valid_time   # (B*clone,64)
+
+                # A row with no visible column cannot be interpolated, so it would
+                # feed an arbitrary constant into the r2_interp baseline and bias
+                # the very comparison this feature is judged on. Drop those rows
+                # from the loss too, so loss and diagnostic see identical positions.
+                anchor = (~masked_b.view(-1, n_time, n_freq).all(-1)) & valid_time
+                col_t = col_t & anchor.any(-1, keepdim=True)
+
+                col = col_t.repeat_interleave(n_freq, dim=-1)                    # (B*clone,512)
+
+                prosody_target = prosody_bt.repeat_interleave(n_freq, dim=1)[col]
+                sel = col[masked_b]
+
+            # d2v_loss scales by 1/sqrt(dim) and sums over it, so a 256-dim recon
+            # term lands sqrt(256/3) ~ 9.24x heavier than a 3-dim one. Without
+            # this, prosody_loss=1.0 is ~9x weaker than recon=1 and the sweep grid
+            # means nothing. Applied at the loss term rather than via
+            # cfg.loss_scale, which is global -- and skipped entirely when
+            # loss_scale is set, since then both terms share one constant and
+            # there is no sqrt(dim) imbalance to correct.
+            if self.loss_scale is None:
+                recon_dim = patch_frames ** 2 * feature_extractor.modality_cfg.in_chans
+                dim_parity = math.sqrt(recon_dim / 3)
+            else:
+                dim_parity = 1.0
+
+            # An unlucky mask draw or a batch of very short utterances can leave no
+            # fully-masked valid column at all. d2v_loss would reduce an empty
+            # tensor to NaN and poison every gradient, but simply skipping the term
+            # would leave prosody_proj without a gradient -- which DDP rejects
+            # ("Expected to have finished reduction in the prior iteration") when
+            # only some ranks hit the empty case. Emit an explicit zero that still
+            # touches the parameter.
+            if prosody_target.numel() > 0:
+                pred = self.prosody_proj(xs[0][sel])
+                prosody_loss = self.d2v_loss(pred, prosody_target.float()) * dim_parity
+            else:
+                pred = None
+                prosody_loss = self.prosody_proj(xs[0][:1]).sum() * 0.0
+
+            result["losses"]["prosody"] = (
+                prosody_loss * self.cfg.prosody_loss * sample_size
+            )
+
+            # Triviality diagnostic. If the model cannot beat linear interpolation
+            # from the visible columns, the task is solvable without learning
+            # structure and will not reshape the encoder at any lambda. Only the
+            # GAP is diagnostic -- a low r2_model alone is expected, since a smooth
+            # 3-dim target has lower residual than 256-dim texture.
+            #
+            # Gated to log steps: the interpolation baseline and the subset assert
+            # cost two scans plus a GPU->CPU sync, and nothing reads the numbers
+            # in between.
+            if pred is not None and self.num_updates % max(1, self.cfg.prosody_diag_interval) == 0:
+                with torch.no_grad():
+                    # col is a subset of masked_b -- guaranteed by .all(-1) above,
+                    # and load-bearing for these two lengths to match.
+                    assert sel.sum() == col.sum()
+                    interp = prosody_interp_baseline(prosody_bt, anchor)
+                    interp = interp.repeat_interleave(n_freq, dim=1)[col]
+                    result["prosody_r2_model"] = _r2(pred.float(), prosody_target.float())
+                    result["prosody_r2_interp"] = _r2(interp.float(), prosody_target.float())
+                    # per-descriptor, not pooled: the three are z-scored separately,
+                    # so a pooled scalar cannot show one of them collapsing. The
+                    # criterion expands this into _0/_1/_2 (model_criterion.py:102-104).
+                    result["prosody_target_var"] = prosody_target.float().var(dim=0)
+                    result["prosody_frac_cols"] = col_t.float().mean()
+
         if self.cfg.d2v_loss > 0:
             for i, x in enumerate(xs):
                 reg_loss = self.d2v_loss(x, y)
@@ -933,6 +1224,7 @@ class Data2VecMultiModel(BaseFairseqModel):
         self.ema = None
         self.cfg.clone_batch = 1
         self.recon_proj = None
+        self.prosody_proj = None
         self.student_dino_head = None
         self.teacher_dino_head = None
         self.dino_loss_fn = None

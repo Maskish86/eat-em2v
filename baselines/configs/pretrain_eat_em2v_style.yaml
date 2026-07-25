@@ -54,6 +54,10 @@ criterion:
     - dino_center_std
     - dino_teacher_entropy
     - dino_active_prototypes
+    - prosody_r2_model
+    - prosody_r2_interp
+    - prosody_target_var
+    - prosody_frac_cols
 
 optimization:
   max_update: 150_000
@@ -108,6 +112,12 @@ model:
   cls_loss: 3
   recon_loss: 1
   d2v_loss: 0
+
+  # emotion-correlated prosody target. 0 = disabled (existing path untouched).
+  # 1.0 is parity with recon=1; the dim-parity factor is applied in the model.
+  # lambda does NOT transfer between prosody_norm modes -- re-sweep within each.
+  prosody_loss: 0
+  prosody_norm: instance
 
   use_dino_head: true
   dino_out_dim: 4096
