@@ -149,14 +149,27 @@ def main():
         ap.error("provide --iemocap_root, or both --manifest and --labels")
 
     if not args.skip_session_check:
-        counts = [0] * 5
-        for utt in utt_ids:
-            counts[int(utt[4]) - 1] += 1
+        # Counts alone are NOT sufficient. eval_downstream_iemocap.py slices fixed
+        # positional ranges, so a manifest that is shuffled or interleaves sessions
+        # can have exactly the right per-session totals and still put session-3
+        # utterances inside fold 1's range. Check that each positional block
+        # contains only its own session.
+        sessions = [int(utt[4]) for utt in utt_ids]
+        counts = [sessions.count(s) for s in range(1, 6)]
         assert counts == SESSION_SIZES, (
             f"per-session counts {counts} != {SESSION_SIZES}. eval_downstream_iemocap.py "
             "splits folds by position, so this would silently evaluate on wrong folds. "
             "Pass --skip_session_check only if you know the eval side matches."
         )
+        bounds = np.cumsum([0] + SESSION_SIZES)
+        for i in range(5):
+            block = set(sessions[bounds[i]:bounds[i + 1]])
+            assert block == {i + 1}, (
+                f"positional block {i} (rows {bounds[i]}:{bounds[i + 1]}) contains "
+                f"sessions {sorted(block)}, expected only {{{i + 1}}}. The utterance "
+                "order is not session-contiguous, so the LOSO folds would mix "
+                "sessions while every count still looks correct."
+            )
 
     dataset = IemocapSpecDataset(
         paths,

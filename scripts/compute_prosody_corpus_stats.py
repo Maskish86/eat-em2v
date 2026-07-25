@@ -82,10 +82,14 @@ def main():
     #   sample_rate      postprocess() raises on a mismatch unless downsr_16hz
     #                    rewrites it first
     #
-    # train_mode='valid' is the one deliberate divergence: it disables `noise` and
-    # `roll_mag_aug`, both gated on train_mode=='train'. Additive noise would
-    # destroy the exact-constancy the pad detection relies on, and the time-axis
-    # roll would stop padding being trailing at all.
+    # train_mode stays 'train'. It has exactly three uses (raw_audio_dataset.py:355,
+    # :385, :412): it gates the HDF5 reader, `roll_mag_aug`, and `noise`. Setting
+    # 'valid' to suppress the augmentations would ALSO disable the HDF5 reader, so
+    # an h5 manifest would fall through to sf.read("<root>/10.h5/x.wav"), retry 3x
+    # and raise before producing a single statistic. The augmentations are instead
+    # switched off by their own flags below, which is sufficient on its own --
+    # additive noise would destroy the exact-constancy the pad detection relies on,
+    # and the time-axis roll would stop padding being trailing at all.
     dataset = FileAudioDataset(
         manifest_path=args.manifest,
         sample_rate=args.sample_rate,
@@ -102,9 +106,10 @@ def main():
         target_length=args.target_length,
         roll_mag_aug=False,
         noise=False,
-        train_mode="valid",
+        train_mode="train",
     )
-    assert not getattr(dataset, "noise", False), "noise must be off for corpus statistics"
+    assert not dataset.noise, "noise must be off for corpus statistics"
+    assert not dataset.roll_mag_aug, "roll_mag_aug must be off for corpus statistics"
     print(f"{len(dataset)} utterances after min_sample_size={args.min_sample_size} filtering "
           f"({len(getattr(dataset, 'skipped_indices', []))} skipped)")
 

@@ -77,11 +77,42 @@ echo
 echo "=============================================================="
 echo " Pre-flight A2 -- prosody contour (training target, 192 dims)"
 echo "=============================================================="
+
+# corpus mode needs the six constants from compute_prosody_corpus_stats.py;
+# compute_prosody asserts on them, so fail here with a usable message instead.
+CONTOUR_NORM_ARGS=()
+if [ "${PROSODY_NORM:-instance}" = "corpus" ]; then
+  if [ -n "${PROSODY_CORPUS_STATS_JSON:-}" ]; then
+    # Two lines, read separately. A single space-joined line cannot be split with
+    # `read -r A B`: the last variable absorbs every remaining field, so the stds
+    # would end up appended to the means.
+    { read -r PROSODY_CORPUS_MEAN; read -r PROSODY_CORPUS_STD; } < <(
+      python - "${PROSODY_CORPUS_STATS_JSON}" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(" ".join(f"{v:.6f}" for v in d["prosody_corpus_mean"]))
+print(" ".join(f"{v:.6f}" for v in d["prosody_corpus_std"]))
+PY
+    )
+  fi
+  if [ -z "${PROSODY_CORPUS_MEAN:-}" ] || [ -z "${PROSODY_CORPUS_STD:-}" ]; then
+    echo "[ERROR] PROSODY_NORM=corpus needs corpus statistics." >&2
+    echo "        Set PROSODY_CORPUS_STATS_JSON to the output of" >&2
+    echo "        scripts/compute_prosody_corpus_stats.py, or set" >&2
+    echo "        PROSODY_CORPUS_MEAN / PROSODY_CORPUS_STD to three floats each." >&2
+    exit 1
+  fi
+  # shellcheck disable=SC2206
+  CONTOUR_NORM_ARGS=(--corpus_mean ${PROSODY_CORPUS_MEAN} --corpus_std ${PROSODY_CORPUS_STD})
+  echo "corpus stats: mean=[${PROSODY_CORPUS_MEAN}] std=[${PROSODY_CORPUS_STD}]"
+fi
+
 python baselines/downstream/preflight_prosody_features.py \
   --iemocap_root "${IEMOCAP_ROOT}" \
   --output_prefix "${PROSODY_PREFIX}_contour" \
   --variant contour \
   --prosody_norm "${PROSODY_NORM:-instance}" \
+  "${CONTOUR_NORM_ARGS[@]}" \
   --batch_size "${PREFLIGHT_BATCH_SIZE:-16}" \
   --num_workers 4 \
   | tee "${PREFLIGHT_OUT}/a2_contour_features.log"
