@@ -112,7 +112,7 @@ python baselines/downstream/preflight_prosody_features.py \
   --output_prefix "${PROSODY_PREFIX}_contour" \
   --variant contour \
   --prosody_norm "${PROSODY_NORM:-instance}" \
-  "${CONTOUR_NORM_ARGS[@]}" \
+  ${CONTOUR_NORM_ARGS[@]+"${CONTOUR_NORM_ARGS[@]}"} \
   --batch_size "${PREFLIGHT_BATCH_SIZE:-16}" \
   --num_workers 4 \
   | tee "${PREFLIGHT_OUT}/a2_contour_features.log"

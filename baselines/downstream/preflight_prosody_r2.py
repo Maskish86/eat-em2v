@@ -121,9 +121,16 @@ def main():
 
         # Pick alpha on a held-out slice of the TRAINING sessions -- never on the
         # test fold, which is the whole point of the LOSO protocol.
+        #
+        # Interleaved, not a positional tail. The data is session-contiguous, so
+        # tr_idx[cut:] would be the last ~20% of the training rows -- i.e. the tail
+        # of Session 5 for folds 1-4, and of Session 4 for fold 5. Alpha would then
+        # be selected on one speaker-session (the same one four times out of five),
+        # mid-session, rather than on a representative sample. Taking every 5th row
+        # spreads the inner validation set across all four training sessions.
         tr_idx = np.where(tr)[0]
-        cut = int(len(tr_idx) * 0.8)
-        inner_tr, inner_va = tr_idx[:cut], tr_idx[cut:]
+        inner_va = tr_idx[::5]
+        inner_tr = np.setdiff1d(tr_idx, inner_va, assume_unique=True)
         best_alpha, best_score = args.alpha[0], -np.inf
         for a in args.alpha:
             pred = ridge_fit_predict(X[inner_tr], Y[inner_tr], X[inner_va], a)

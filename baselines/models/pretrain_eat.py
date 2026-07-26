@@ -449,6 +449,28 @@ class Data2VecMultiModel(BaseFairseqModel):
                     "prosody_loss requires task.noise=False (Route B pad detection); "
                     "thread n_frames through the dataset (Route A) to lift this"
                 )
+                # Validate here rather than inside compute_prosody, which first
+                # runs one training step in -- after model build, EMA teacher
+                # construction and dataloader warm-up. A typo would otherwise cost
+                # minutes of a job to surface. "none" is deliberately excluded: it
+                # is a diagnostic mode for the probes and the corpus-stats job, and
+                # an unnormalized target makes the dim-parity constant (which
+                # assumes ~unit target variance) meaningless.
+                assert cfg.prosody_norm in ("instance", "corpus"), (
+                    f"prosody_norm={cfg.prosody_norm!r}; training accepts only "
+                    "'instance' or 'corpus' ('none' is diagnostic-only)"
+                )
+                if cfg.prosody_norm == "corpus":
+                    assert (
+                        cfg.prosody_corpus_mean is not None
+                        and cfg.prosody_corpus_std is not None
+                        and len(cfg.prosody_corpus_mean) == 3
+                        and len(cfg.prosody_corpus_std) == 3
+                    ), (
+                        "prosody_norm=corpus needs 3 prosody_corpus_mean and 3 "
+                        "prosody_corpus_std; produce them with "
+                        "scripts/compute_prosody_corpus_stats.py"
+                    )
 
             self.student_dino_head = None
             self.teacher_dino_head = None
@@ -1057,20 +1079,47 @@ class Data2VecMultiModel(BaseFairseqModel):
             # Gated to log steps: the interpolation baseline and the subset assert
             # cost two scans plus a GPU->CPU sync, and nothing reads the numbers
             # in between.
-            if pred is not None and self.num_updates % max(1, self.cfg.prosody_diag_interval) == 0:
+            #
+            # The gate must be RANK-UNIFORM. num_updates is synced, but
+            # `pred is not None` is per-rank data-dependent (an unlucky mask draw or
+            # a batch of very short utterances leaves no fully-masked valid column).
+            # model_criterion.py:98 only writes a log key when it is present in
+            # net_output, and _fast_stat_sync_sum (trainer.py:1442) derives its key
+            # list from logging_outputs[0] LOCALLY on each rank before
+            # all_reduce_dict. Ranks disagreeing on the key set therefore all-reduce
+            # different-sized dicts -> NCCL hang. So emit all four keys whenever the
+            # step is a diagnostic step, with zero sentinels when this rank had
+            # nothing to score. prosody_frac_cols == 0 is what marks such a rank;
+            # zeros (not NaN) because the criterion sums across ranks and one NaN
+            # would poison every subsequent average.
+            if self.num_updates % max(1, self.cfg.prosody_diag_interval) == 0:
                 with torch.no_grad():
-                    # col is a subset of masked_b -- guaranteed by .all(-1) above,
-                    # and load-bearing for these two lengths to match.
-                    assert sel.sum() == col.sum()
-                    interp = prosody_interp_baseline(prosody_bt, anchor)
-                    interp = interp.repeat_interleave(n_freq, dim=1)[col]
-                    result["prosody_r2_model"] = _r2(pred.float(), prosody_target.float())
-                    result["prosody_r2_interp"] = _r2(interp.float(), prosody_target.float())
-                    # per-descriptor, not pooled: the three are z-scored separately,
-                    # so a pooled scalar cannot show one of them collapsing. The
-                    # criterion expands this into _0/_1/_2 (model_criterion.py:102-104).
-                    result["prosody_target_var"] = prosody_target.float().var(dim=0)
-                    result["prosody_frac_cols"] = col_t.float().mean()
+                    if pred is None:
+                        # Sentinels only -- must NOT return early, or this rank
+                        # would also skip the d2v/state keys emitted below and
+                        # reintroduce the divergence from the other direction.
+                        result["prosody_r2_model"] = prosody_target.new_zeros(())
+                        result["prosody_r2_interp"] = prosody_target.new_zeros(())
+                        result["prosody_target_var"] = prosody_target.new_zeros(3)
+                        result["prosody_frac_cols"] = prosody_target.new_zeros(())
+                    else:
+                        # col is a subset of masked_b -- guaranteed by .all(-1)
+                        # above, and load-bearing for these two lengths to match.
+                        assert sel.sum() == col.sum()
+                        interp = prosody_interp_baseline(prosody_bt, anchor)
+                        interp = interp.repeat_interleave(n_freq, dim=1)[col]
+                        result["prosody_r2_model"] = _r2(pred.float(), prosody_target.float())
+                        result["prosody_r2_interp"] = _r2(interp.float(), prosody_target.float())
+                        # per-descriptor, not pooled: the three are z-scored
+                        # separately, so a pooled scalar cannot show one of them
+                        # collapsing. The criterion expands this into _0/_1/_2
+                        # (model_criterion.py:102-104) -- so the sentinel above must
+                        # also be length 3 or the key COUNT would differ per rank.
+                        # Inside the else on purpose: var(dim=0) over an empty
+                        # (0, 3) target is NaN, and one NaN summed across ranks
+                        # poisons every later average.
+                        result["prosody_target_var"] = prosody_target.float().var(dim=0)
+                        result["prosody_frac_cols"] = col_t.float().mean()
 
         if self.cfg.d2v_loss > 0:
             for i, x in enumerate(xs):

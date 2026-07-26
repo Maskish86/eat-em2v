@@ -263,25 +263,37 @@ def main():
     lab = np.array([e.split()[1] for e in emo_entries])
     uniq, cnt = np.unique(lab, return_counts=True)
 
-    # The comparable floor is per-fold: eval_downstream_iemocap.py reports WA on a
-    # held-out session, so the majority-class rate is computed per test fold and
-    # averaged, not over the pooled corpus.
-    bounds = np.cumsum([0] + SESSION_SIZES)
-    fold_major = []
-    for i in range(5):
-        fold = lab[bounds[i]:bounds[i + 1]]
-        if len(fold):
-            fold_major.append(np.unique(fold, return_counts=True)[1].max() / len(fold))
-
     print(f"Wrote {prefix}.npy  shape={X.shape}  variant={args.variant}")
     print(f"valid patches per utterance: mean={vp.mean():.1f} min={vp.min()} max={vp.max()}")
     print(f"class counts: {dict(zip(uniq.tolist(), cnt.tolist()))}")
     print(f"pooled majority-class rate  = {cnt.max() / cnt.sum() * 100:.2f}%")
-    print(
-        f"MEAN PER-FOLD MAJORITY RATE = {np.mean(fold_major) * 100:.2f}%"
-        f"  (per fold: {', '.join(f'{m*100:.1f}' for m in fold_major)})"
-    )
-    print("   ^ compare the probe's WA against this, not 25%")
+
+    # The comparable floor is per-fold: eval_downstream_iemocap.py reports WA on a
+    # held-out session, so the majority-class rate is computed per test fold and
+    # averaged, not over the pooled corpus.
+    #
+    # This is only meaningful when the positional blocks really are the sessions,
+    # which is exactly what --skip_session_check waives. Printing a confident floor
+    # derived from the wrong partition would corrupt the go/no-go decision this
+    # number exists to drive, so say so instead of guessing.
+    if args.skip_session_check:
+        print("MEAN PER-FOLD MAJORITY RATE = (not computed)")
+        print("   ^ --skip_session_check waives the session-contiguity guarantee, so the")
+        print("     fixed positional blocks are not known to be the LOSO folds. Compute the")
+        print("     floor from whatever partition your eval side actually uses.")
+    else:
+        bounds = np.cumsum([0] + SESSION_SIZES)
+        fold_major = [
+            np.unique(lab[bounds[i]:bounds[i + 1]], return_counts=True)[1].max()
+            / SESSION_SIZES[i]
+            for i in range(5)
+        ]
+        print(
+            f"MEAN PER-FOLD MAJORITY RATE = {np.mean(fold_major) * 100:.2f}%"
+            f"  (per fold: {', '.join(f'{m*100:.1f}' for m in fold_major)})"
+        )
+        print("   ^ compare the probe's WA against this, not 25%")
+
     print(f"\nNext: eval_downstream_iemocap.py --feat_prefix {prefix}")
 
 
