@@ -145,6 +145,25 @@ def main():
         paths, utt_ids, labels = load_iemocap_root(args.iemocap_root)
     elif args.manifest and args.labels:
         paths, utt_ids, labels = load_manifest_labels(args.manifest, args.labels)
+        # load_manifest_labels reads paths from the manifest and utt_ids/labels
+        # from a separate file, checking only that the two have equal LENGTH -- it
+        # never cross-checks their order. Every other guard below validates
+        # utt_ids, i.e. the label file's ordering, while the spectrograms come from
+        # paths. If the two files were sorted differently, each spectrogram would
+        # be paired with another utterance's label, all the checks would pass, and
+        # the probe would land at the majority-class floor -- reading as "the
+        # direction is dead" under the decision rule this script exists to serve.
+        mismatched = [
+            (i, Path(p).stem, u) for i, (p, u) in enumerate(zip(paths, utt_ids)) if Path(p).stem != u
+        ]
+        if mismatched:
+            i, stem, u = mismatched[0]
+            raise ValueError(
+                f"manifest and label file disagree on ordering at {len(mismatched)} of "
+                f"{len(paths)} rows (first at index {i}: manifest has '{stem}', labels "
+                f"have '{u}'). They are zipped positionally, so this would silently "
+                "attach the wrong label to every spectrogram."
+            )
     else:
         ap.error("provide --iemocap_root, or both --manifest and --labels")
 

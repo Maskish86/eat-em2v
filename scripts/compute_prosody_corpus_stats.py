@@ -108,6 +108,16 @@ def main():
         noise=False,
         train_mode="train",
     )
+    # These two are hardcoded constants, not knobs that could be made to match a
+    # training run -- and deliberately so:
+    #   noise         breaks Route B pad detection outright (destroys the exact
+    #                 constancy of the pad plateau)
+    #   roll_mag_aug  applies a random gain, i.e. randomizes the absolute log-energy
+    #                 these constants exist to center. prosody_norm=corpus asserts
+    #                 task.roll_aug=False for the same reason (pretrain_eat.py), so
+    #                 a run these statistics are valid for cannot have it on.
+    # If a run needs roll_aug, it must use prosody_norm=instance, which subtracts
+    # the per-utterance mean and needs no constants at all.
     assert not dataset.noise, "noise must be off for corpus statistics"
     assert not dataset.roll_mag_aug, "roll_mag_aug must be off for corpus statistics"
     print(f"{len(dataset)} utterances after min_sample_size={args.min_sample_size} filtering "

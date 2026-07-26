@@ -86,6 +86,13 @@ def main():
                     help="Ridge penalties; the best is chosen per fold on an inner split of the training sessions.")
     ap.add_argument("--output_json", default=None, help="Where to write the numbers (default: <feat_prefix>.prosody_r2.json).")
     ap.add_argument("--label", default=None, help="Name for this encoder in the printout, e.g. 'frozen-EAT'.")
+    ap.add_argument(
+        "--skip_session_check",
+        action="store_true",
+        help="Proceed when the utterance count does not match the 5531-utterance "
+             "IEMOCAP total. Folds are positional, so the result is then computed "
+             "over mixed sessions and must not be recorded as the baseline.",
+    )
     args = ap.parse_args()
 
     feats, offsets, utts = load_prefix(args.feat_prefix)
@@ -107,8 +114,19 @@ def main():
         f"expected a {len(DESCRIPTORS) * len(STATS)}-dim summary target, got {Y.shape[1]}. "
         "Pass --variant summary to preflight_prosody_features.py."
     )
-    if sum(SESSION_SIZES) != X.shape[0]:
-        print(f"[warn] {X.shape[0]} utterances != {sum(SESSION_SIZES)} expected; folds may not be sessions.")
+    # Assert rather than warn, matching preflight_prosody_features.py. The folds
+    # are positional, so on a filtered subset the ridge would be fit across mixed
+    # sessions -- and these numbers are what the plan says to record as the
+    # frozen-EAT baseline the post-training run is compared against. A printed
+    # warning is easy to lose in a tee'd log; a wrong baseline is not recoverable
+    # later, because the comparison run will look like a legitimate change.
+    if sum(SESSION_SIZES) != X.shape[0] and not args.skip_session_check:
+        raise ValueError(
+            f"{X.shape[0]} utterances != {sum(SESSION_SIZES)} expected, so the fixed "
+            "positional bounds are not the LOSO sessions and the folds would mix "
+            "speakers. Pass --skip_session_check to proceed anyway, and do NOT record "
+            "the result as the frozen-EAT baseline."
+        )
 
     bounds = np.cumsum([0] + SESSION_SIZES)
     n_folds = sum(1 for i in range(5) if bounds[i + 1] <= X.shape[0])

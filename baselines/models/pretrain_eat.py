@@ -471,6 +471,25 @@ class Data2VecMultiModel(BaseFairseqModel):
                         "prosody_corpus_std; produce them with "
                         "scripts/compute_prosody_corpus_stats.py"
                     )
+                    # roll_mag_aug multiplies the waveform by a random gain
+                    # mag ~ Beta(10,10)+0.5 in [0.5, 1.5]
+                    # (raw_audio_dataset.py:87-92), which shifts every log-mel bin
+                    # by 2*ln(mag) and so log_energy by -1.39..+0.81 nats, redrawn
+                    # every epoch. Centroid and flux are invariant to it -- a
+                    # uniform level shift cancels in softmax(S) and in S_t - S_t-1
+                    # -- so this bites exactly one descriptor, and only in `corpus`
+                    # mode: `instance` subtracts the per-utterance mean and removes
+                    # the offset entirely. In corpus mode the absolute level the
+                    # mode exists to preserve becomes augmentation noise,
+                    # mis-centered against constants that
+                    # scripts/compute_prosody_corpus_stats.py produced with the
+                    # augmentation off. Nothing in the loss curve reveals it.
+                    assert not getattr(getattr(task, "cfg", None), "roll_aug", False), (
+                        "prosody_norm=corpus requires task.roll_aug=False; the random "
+                        "gain randomizes absolute log-energy, which is the only thing "
+                        "corpus mode adds over instance. Use prosody_norm=instance to "
+                        "keep roll_aug."
+                    )
 
             self.student_dino_head = None
             self.teacher_dino_head = None
