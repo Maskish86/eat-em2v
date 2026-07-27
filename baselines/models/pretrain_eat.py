@@ -1113,6 +1113,38 @@ class Data2VecMultiModel(BaseFairseqModel):
             # would poison every subsequent average.
             if self.num_updates % max(1, self.cfg.prosody_diag_interval) == 0:
                 with torch.no_grad():
+                    # Drift guard on the de-normalization constants. prosody_denorm_
+                    # mean/std duplicate values that raw_audio_dataset.py:407-408
+                    # sets INLINE, overwriting its own constructor arguments -- so
+                    # nothing links the two, and a change to either goes unnoticed.
+                    #
+                    # The failure is silent and worse than a wrong scale: pad
+                    # detection looks for frames sitting at exactly
+                    # -mean/(2*std) ~ 0.46706, so mismatched constants match no
+                    # frame, valid_time comes back all-true, and the pad plateau --
+                    # which Step 0 recovers as a region LOUDER than quiet speech --
+                    # is folded into every descriptor and into the corpus stats.
+                    #
+                    # At target_length=1024 (10.24s) an emotion corpus pads heavily,
+                    # so a batch with NO detected padding anywhere is near-certain
+                    # evidence of drift. Warn rather than raise: a corpus of
+                    # uniformly long utterances would be a legitimate zero.
+                    frac_padded = (valid_time.sum(-1) < n_time).float().mean()
+                    result["prosody_frac_padded"] = frac_padded
+                    if frac_padded == 0 and not getattr(self, "_prosody_pad_warned", False):
+                        self._prosody_pad_warned = True
+                        logger.warning(
+                            "prosody: no padding detected in any utterance of this batch. "
+                            "Expected heavy padding at target_length=%d. Check that "
+                            "prosody_denorm_mean/std (%.4f/%.4f -> pad_value %.5f) still "
+                            "match raw_audio_dataset.py:407-408; if they have drifted, "
+                            "padded frames are silently contaminating the prosody target.",
+                            n_time * patch_frames,
+                            self.cfg.prosody_denorm_mean,
+                            self.cfg.prosody_denorm_std,
+                            -self.cfg.prosody_denorm_mean / (self.cfg.prosody_denorm_std * 2),
+                        )
+
                     if pred is None:
                         # Sentinels only -- must NOT return early, or this rank
                         # would also skip the d2v/state keys emitted below and

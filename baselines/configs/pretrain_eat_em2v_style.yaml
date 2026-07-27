@@ -58,6 +58,10 @@ criterion:
     - prosody_r2_interp
     - prosody_target_var
     - prosody_frac_cols
+    # drift guard: fraction of utterances with detected padding. A sustained 0
+    # means prosody_denorm_mean/std no longer match the dataset's normalization
+    # and padded frames are contaminating the target -- silently.
+    - prosody_frac_padded
 
 optimization:
   max_update: 150_000
