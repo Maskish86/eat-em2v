@@ -131,6 +131,16 @@ def main():
     bounds = np.cumsum([0] + SESSION_SIZES)
     n_folds = sum(1 for i in range(5) if bounds[i + 1] <= X.shape[0])
 
+    # Rows past the last complete fold belong to sessions that are never held out.
+    # Leaving them in `tr` would put those speakers in every fold's training set --
+    # silently, since they are also never tested and so never flagged. Restrict the
+    # whole problem to the covered prefix instead.
+    covered = int(bounds[n_folds])
+    if covered < X.shape[0]:
+        print(f"[warn] dropping rows {covered}:{X.shape[0]} -- past the last complete "
+              f"fold, so those sessions would train in every fold and test in none.")
+        X, Y = X[:covered], Y[:covered]
+
     per_fold = []
     for i in range(n_folds):
         te = np.zeros(X.shape[0], dtype=bool)

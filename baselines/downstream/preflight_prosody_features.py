@@ -82,10 +82,27 @@ def _loso_linear_acc(X, y, n_classes, alpha=1.0):
         te = np.zeros(X.shape[0], dtype=bool)
         te[bounds[i]:bounds[i + 1]] = True
         tr = ~te
-        xm, ym = X[tr].mean(0, keepdims=True), Y[tr].mean(0, keepdims=True)
-        Xc = X[tr] - xm
+
+        # Standardize per fold on TRAINING statistics only. Both halves matter:
+        #
+        # scale -- a single `alpha` across dims of wildly different magnitude
+        #   penalizes them unequally. Under --no_zscore the raw summary dims span
+        #   ~4 orders of magnitude (centroid ~1e2, log-energy ~1e1, slope ~1e-2),
+        #   so an unscaled ridge would rank descriptors by numeric size rather
+        #   than information -- and this table is what the "does flux earn its
+        #   place" decision is read off.
+        # leak  -- fitting on train rows only keeps this ablation free of the
+        #   transductive caveat that applies to the written-out features, so the
+        #   two numbers are not contaminated by the same thing.
+        mu = X[tr].mean(0, keepdims=True)
+        sd = X[tr].std(0, keepdims=True)
+        sd = np.where(sd > 1e-8, sd, 1.0)
+        Xs = (X - mu) / sd
+
+        ym = Y[tr].mean(0, keepdims=True)
+        Xc = Xs[tr]
         W = np.linalg.solve(Xc.T @ Xc + alpha * np.eye(X.shape[1]), Xc.T @ (Y[tr] - ym))
-        pred = ((X[te] - xm) @ W + ym).argmax(1)
+        pred = (Xs[te] @ W + ym).argmax(1)
         correct += int((pred == y[te]).sum())
         total += int(te.sum())
     return correct / total
@@ -321,6 +338,16 @@ def main():
         if not keep.all():
             print(f"[warn] {int((~keep).sum())} constant dim(s) zeroed: {np.where(~keep)[0].tolist()}")
 
+    # The summary variant hard-codes norm="none" (raw descriptors are the point --
+    # absolute level is what it tests), so --prosody_norm is accepted but ignored
+    # there. Record what was actually used, not what was passed: these JSONs are
+    # the provenance trail, and a summary run invoked with --prosody_norm corpus
+    # would otherwise be labelled `corpus` while containing raw statistics.
+    norm_used = "none" if args.variant == "summary" else args.prosody_norm
+    if args.variant == "summary" and args.prosody_norm != ap.get_default("prosody_norm"):
+        print(f"[warn] --prosody_norm {args.prosody_norm} ignored for --variant summary "
+              f"(raw descriptors by design); recording prosody_norm=none")
+
     prefix = Path(args.output_prefix)
     prefix.parent.mkdir(parents=True, exist_ok=True)
     np.save(f"{prefix}.npy", X.astype(np.float32))
@@ -334,7 +361,7 @@ def main():
     else:
         names = [f"{d}_t{t}" for d in DESCRIPTORS for t in range(n_time)]
     with open(f"{prefix}.dims.json", "w") as f:
-        json.dump({"variant": args.variant, "prosody_norm": args.prosody_norm, "dims": names}, f, indent=2)
+        json.dump({"variant": args.variant, "prosody_norm": norm_used, "dims": names}, f, indent=2)
 
     vp = np.array(n_valid_patches)
     lab = np.array([e.split()[1] for e in emo_entries])
@@ -380,7 +407,7 @@ def main():
             json.dump(
                 {
                     "variant": args.variant,
-                    "prosody_norm": args.prosody_norm,
+                    "prosody_norm": norm_used,
                     "mean_per_fold_majority": float(np.mean(fold_major)),
                     "accuracy": abl,
                     "note": "closed-form ridge-to-one-hot LOSO classifier; indicative "

@@ -460,6 +460,20 @@ class Data2VecMultiModel(BaseFairseqModel):
                     f"prosody_norm={cfg.prosody_norm!r}; training accepts only "
                     "'instance' or 'corpus' ('none' is diagnostic-only)"
                 )
+                # PROSODY_DIM_PARITY is computed from recon's feature dim
+                # (patch_size^2 * in_chans = 256), so "prosody_loss=1.0 is parity"
+                # is a statement about `recon` specifically. With recon disabled
+                # the constant still applies but the contract it documents is
+                # false: d2v's feature dim is embed_dim=768, not 256, so a lambda
+                # sweep would be calibrated against a term that is not running.
+                # Note the dataclass defaults are recon_loss=0 / d2v_loss=1 -- the
+                # broken combination -- and only the shipped yaml flips them.
+                assert cfg.recon_loss > 0, (
+                    f"prosody_loss>0 requires recon_loss>0 (got {cfg.recon_loss}); "
+                    "the dim-parity constant that makes prosody_loss=1.0 mean "
+                    "'parity with recon=1' is derived from recon's 256-dim target. "
+                    "Prosody is designed to sit alongside recon, not replace it."
+                )
                 if cfg.prosody_norm == "corpus":
                     assert (
                         cfg.prosody_corpus_mean is not None
@@ -1055,7 +1069,7 @@ class Data2VecMultiModel(BaseFairseqModel):
             # d2v_loss SUMS over the feature dim after applying `scale`, so the
             # per-dim count never cancels and prosody needs an explicit correction
             # to sit at parity with recon. The factor depends on which scale branch
-            # d2v_loss takes (:846-852):
+            # d2v_loss takes (:1233-1251):
             #
             #   loss_scale is None -> scale = 1/sqrt(D)
             #       recon   = (1/16)*256*e = 16*e
@@ -1144,6 +1158,20 @@ class Data2VecMultiModel(BaseFairseqModel):
                             self.cfg.prosody_denorm_std,
                             -self.cfg.prosody_denorm_mean / (self.cfg.prosody_denorm_std * 2),
                         )
+
+                    # ModelCriterion.reduce_metrics sums across ranks and divides
+                    # by _world_size, so a rank contributing zero sentinels drags
+                    # the mean down. r2_model and r2_interp are both scaled by
+                    # (N-k)/N with k empty ranks, so the GAP -- the only thing the
+                    # triviality decision reads -- is compressed toward zero, i.e.
+                    # biased toward "the task is trivial, abandon it".
+                    #
+                    # This key averages to exactly (N-k)/N, so the true gap is
+                    # (reported r2_model - reported r2_interp) / prosody_diag_frac.
+                    # prosody_frac_cols cannot serve this purpose: it is averaged
+                    # too, so k is not recoverable from it.
+                    result["prosody_diag_frac"] = prosody_target.new_ones(()) if pred is not None \
+                        else prosody_target.new_zeros(())
 
                     if pred is None:
                         # Sentinels only -- must NOT return early, or this rank

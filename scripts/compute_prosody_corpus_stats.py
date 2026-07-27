@@ -108,8 +108,13 @@ def main():
         noise=False,
         train_mode="train",
     )
-    # These two are hardcoded constants, not knobs that could be made to match a
-    # training run -- and deliberately so:
+    # NOTE ON WHAT THESE ASSERTS DO. They check values hardcoded in the call above,
+    # so they can never fire today -- they are a regression guard against a future
+    # edit to *this call site*, not a check that the training run agrees. Nothing
+    # here can verify the training config; that direction is enforced from the
+    # model side, where prosody_norm=corpus asserts task.roll_aug=False.
+    #
+    # Both are hardcoded rather than exposed as flags, deliberately:
     #   noise         breaks Route B pad detection outright (destroys the exact
     #                 constancy of the pad plateau)
     #   roll_mag_aug  applies a random gain, i.e. randomizes the absolute log-energy
