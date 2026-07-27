@@ -66,6 +66,64 @@ STATS = ["mean", "std", "min", "max", "slope"]
 SESSION_SIZES = [1085, 1023, 1151, 1031, 1241]
 
 
+def _loso_linear_acc(X, y, n_classes, alpha=1.0):
+    """Accuracy of a closed-form linear classifier under 5-fold LOSO.
+
+    Ridge regression onto one-hot targets, argmax at test time. Deterministic,
+    dependency-free, and seconds to run -- this is an *indicator* for comparing
+    feature subsets against each other, NOT a replacement for the real probe in
+    eval_downstream_iemocap.py (which is an MLP with a different optimizer). Read
+    the differences between rows, not the absolute values.
+    """
+    bounds = np.cumsum([0] + SESSION_SIZES)
+    Y = np.eye(n_classes)[y]
+    correct = total = 0
+    for i in range(5):
+        te = np.zeros(X.shape[0], dtype=bool)
+        te[bounds[i]:bounds[i + 1]] = True
+        tr = ~te
+        xm, ym = X[tr].mean(0, keepdims=True), Y[tr].mean(0, keepdims=True)
+        Xc = X[tr] - xm
+        W = np.linalg.solve(Xc.T @ Xc + alpha * np.eye(X.shape[1]), Xc.T @ (Y[tr] - ym))
+        pred = ((X[te] - xm) @ W + ym).argmax(1)
+        correct += int((pred == y[te]).sum())
+        total += int(te.sum())
+    return correct / total
+
+
+def descriptor_ablation(X, names, labels, floor):
+    """Per-descriptor and leave-one-out accuracy, computed in this same pass.
+
+    Answers "does each descriptor earn its place?" without a second invocation or
+    a flag to remember: the descriptors are CPU-only and the classifier is closed
+    form, so the whole table costs well under a second.
+    """
+    classes = sorted(set(labels))
+    y = np.array([classes.index(l) for l in labels])
+    cols = {d: [i for i, n in enumerate(names) if n.startswith(d + "_")] for d in DESCRIPTORS}
+
+    rows = [("all three", list(range(X.shape[1])))]
+    rows += [(f"{d} only", cols[d]) for d in DESCRIPTORS]
+    rows += [(f"without {d}", [i for i in range(X.shape[1]) if i not in cols[d]]) for d in DESCRIPTORS]
+
+    print("\n--- descriptor ablation (indicative linear probe, not the real one) ---")
+    print(f"{'subset':<18} {'dims':>5} {'acc %':>7} {'vs floor':>9} {'vs all':>8}")
+    all_acc = None
+    out = {}
+    for name, idx in rows:
+        if not idx:
+            continue
+        acc = _loso_linear_acc(X[:, idx], y, len(classes))
+        if all_acc is None:
+            all_acc = acc
+        out[name] = acc
+        delta_all = "" if name == "all three" else f"{(acc - all_acc) * 100:+8.2f}"
+        print(f"{name:<18} {len(idx):>5} {acc * 100:>7.2f} {(acc - floor) * 100:>+9.2f} {delta_all:>8}")
+    print("Read the DIFFERENCES between rows. A descriptor whose 'without' row is")
+    print("flat against 'all three' is not contributing on top of the other two.")
+    return out
+
+
 def summary_stats(p, valid_time):
     """Per-descriptor mean/std/min/max/slope over valid patches only.
 
@@ -312,6 +370,26 @@ def main():
             f"  (per fold: {', '.join(f'{m*100:.1f}' for m in fold_major)})"
         )
         print("   ^ compare the probe's WA against this, not 25%")
+
+        # Always run, no flag to remember. The question "does flux earn its place?"
+        # is otherwise unanswerable with this tooling: the eval returns a single WA
+        # over all 15 dims, and Pre-flight B measures decodability FROM the encoder,
+        # which is the opposite direction.
+        abl = descriptor_ablation(X, names, lab, float(np.mean(fold_major)))
+        with open(f"{prefix}.ablation.json", "w") as f:
+            json.dump(
+                {
+                    "variant": args.variant,
+                    "prosody_norm": args.prosody_norm,
+                    "mean_per_fold_majority": float(np.mean(fold_major)),
+                    "accuracy": abl,
+                    "note": "closed-form ridge-to-one-hot LOSO classifier; indicative "
+                            "only, for comparing subsets against each other. The "
+                            "reported protocol is eval_downstream_iemocap.py.",
+                },
+                f,
+                indent=2,
+            )
 
     print(f"\nNext: eval_downstream_iemocap.py --feat_prefix {prefix}")
 
