@@ -45,6 +45,17 @@ PROSODY_PREFIX="${PROSODY_PREFIX:-${FEAT_PREFIX%/*}/prosody}"
 PREFLIGHT_OUT="${PREFLIGHT_OUT:-${OUTPUT_DIR%/}/preflight}"
 mkdir -p "$(dirname "${PROSODY_PREFIX}")" "${PREFLIGHT_OUT}"
 
+# Say up front whether W&B is on. Without this the only symptom of a missing
+# WANDB_PROJECT is the absence of output at the very END of a multi-minute run --
+# the `${VAR:+--flag}` form passes nothing and the probe skips silently.
+if [ -n "${WANDB_PROJECT:-}" ]; then
+  echo "[INFO] W&B: project=${WANDB_PROJECT} group=${WANDB_GROUP:-<none>}-preflight"
+  [ -n "${WANDB_API_KEY:-}" ] || echo "[WARN] WANDB_API_KEY is empty (${MAIN_ENV} missing?) -- wandb may prompt or run offline"
+else
+  echo "[WARN] WANDB_PROJECT is not set in ${ENV_FILE}; the probes will NOT log to W&B."
+  echo "       The ablation table and the R2 baseline will exist only in ${PREFLIGHT_OUT}."
+fi
+
 echo
 echo "=============================================================="
 echo " Pre-flight A1 -- prosody summary (raw descriptors, 15 dims)"

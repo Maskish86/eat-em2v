@@ -586,6 +586,7 @@ def main():
             )
 
     if args.wandb_project and wandb is not None and not args.skip_session_check:
+        print(f"\nlogging to W&B: project={args.wandb_project} group={args.wandb_group}")
         run = wandb.init(
             project=args.wandb_project,
             group=args.wandb_group,
@@ -617,6 +618,8 @@ def main():
         wandb.finish()
     elif args.wandb_project and wandb is None:
         print("[warn] --wandb_project given but wandb is not importable; skipping W&B")
+    elif not args.wandb_project:
+        print("\n(no --wandb_project; results are in the files above only)")
 
     print(f"\nNext: eval_downstream_iemocap.py --feat_prefix {prefix}")
 
