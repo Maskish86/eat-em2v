@@ -33,6 +33,11 @@ from pathlib import Path
 
 import numpy as np
 
+try:                      # optional: the probe is useful without it
+    import wandb
+except Exception:
+    wandb = None
+
 DESCRIPTORS = ["log_energy", "centroid", "flux"]
 STATS = ["mean", "std", "min", "max", "slope"]
 SESSION_SIZES = [1085, 1023, 1151, 1031, 1241]
@@ -189,6 +194,14 @@ def main():
                     help="Ridge penalties; the best is chosen per fold on an inner split of the training sessions.")
     ap.add_argument("--output_json", default=None, help="Where to write the numbers (default: <feat_prefix>.prosody_r2.json).")
     ap.add_argument("--label", default=None, help="Name for this encoder in the printout, e.g. 'frozen-EAT'.")
+    ap.add_argument("--wandb_project", default=None,
+                    help="Log per-descriptor R^2 as summary metrics so the frozen-EAT "
+                         "baseline and the post-training run are directly comparable in "
+                         "the UI -- which is the comparison success requirement 2 rests "
+                         "on. Without this the baseline lives only in a JSON on pod-local "
+                         "disk and is not reconstructible later.")
+    ap.add_argument("--wandb_name", default=None)
+    ap.add_argument("--wandb_group", default=None)
     ap.add_argument(
         "--skip_session_check",
         action="store_true",
@@ -356,6 +369,41 @@ def main():
             f,
             indent=2,
         )
+    if args.wandb_project and wandb is not None:
+        run = wandb.init(
+            project=args.wandb_project,
+            group=args.wandb_group,
+            name=args.wandb_name or f"preflight-r2-{tag}",
+            job_type="preflight_b",
+            config={"encoder": tag, "feat_prefix": args.feat_prefix,
+                    "prosody_prefix": args.prosody_prefix,
+                    "descriptors": descs, "training_descriptors": trained,
+                    "n_folds": n_folds},
+        )
+        # Flat summary keys, deliberately: two runs (frozen baseline vs
+        # post-training) then sit side by side in the runs table and the delta is
+        # readable without opening either JSON.
+        for d, v in grouped.items():
+            wandb.summary[f"prosody_r2/{d}"] = v
+        wandb.summary["prosody_r2/overall"] = overall
+        wandb.summary["prosody_r2/overall_all_dims"] = float(r2_mean.mean())
+        tbl = wandb.Table(columns=["dim", "r2_mean", "r2_std"])
+        for n, m, sd in zip(names, r2_mean, r2_std):
+            tbl.add_data(n, float(m), float(sd))
+        wandb.log({"per_dim_r2": tbl})
+        if joined:
+            jt = wandb.Table(columns=["descriptor", "ua_only", "ua_drop", "r2", "verdict"])
+            for d, r in joined.items():
+                jt.add_data(d, r["only_ua"], r["ua_drop"], r["r2"], r["verdict"])
+            wandb.log({"joined_relevance_x_decodability": jt})
+        art = wandb.Artifact(name=f"preflight-b-{tag}", type="preflight",
+                             metadata={"overall_r2": overall})
+        art.add_file(str(out))
+        run.log_artifact(art)
+        wandb.finish()
+    elif args.wandb_project and wandb is None:
+        print("[warn] --wandb_project given but wandb is not importable; skipping W&B")
+
     print(f"\nWrote {out}")
 
 

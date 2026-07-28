@@ -50,6 +50,11 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
+try:                      # optional: the probes are useful without it
+    import wandb
+except Exception:
+    wandb = None
+
 from baselines.models.pretrain_eat import (
     PROSODY_CANDIDATES,
     compute_prosody,
@@ -271,6 +276,12 @@ def main():
     ap.add_argument("--patch_size", type=int, default=16)
     ap.add_argument("--norm_mean", type=float, default=-4.268)
     ap.add_argument("--norm_std", type=float, default=4.569)
+    ap.add_argument("--wandb_project", default=None,
+                    help="Log the floor, the ablation table and the JSON artifact to W&B. "
+                         "Without this the ablation exists only in stdout and a file on "
+                         "pod-local disk.")
+    ap.add_argument("--wandb_name", default=None)
+    ap.add_argument("--wandb_group", default=None)
     ap.add_argument(
         "--skip_session_check",
         action="store_true",
@@ -573,6 +584,39 @@ def main():
                 f,
                 indent=2,
             )
+
+    if args.wandb_project and wandb is not None and not args.skip_session_check:
+        run = wandb.init(
+            project=args.wandb_project,
+            group=args.wandb_group,
+            name=args.wandb_name or f"preflight-descriptors-{args.variant}",
+            job_type="preflight_a",
+            config={"variant": args.variant, "prosody_norm": norm_used,
+                    "descriptors": DESCRIPTORS, "candidates": list(PROSODY_CANDIDATES),
+                    "n_utterances": int(X.shape[0]), "dims": int(X.shape[1])},
+        )
+        wandb.summary["floor/wa_majority"] = float(np.mean(fold_major))
+        wandb.summary["floor/ua_chance"] = 1.0 / len(set(lab.tolist()))
+        wandb.summary["valid_patches_mean"] = float(vp.mean())
+        cols = ["subset", "dims", "wa", "ua", "d_wa", "d_ua"]
+        base = abl.get("all three", {})
+        tbl = wandb.Table(columns=cols)
+        for name_, r in abl.items():
+            tbl.add_data(name_, None, r["wa"], r["ua"],
+                         r["wa"] - base.get("wa", r["wa"]), r["ua"] - base.get("ua", r["ua"]))
+            key = name_.replace(" ", "_").replace("[", "").replace("]", "")
+            wandb.summary[f"abl/{key}/wa"] = r["wa"]
+            wandb.summary[f"abl/{key}/ua"] = r["ua"]
+        wandb.log({"descriptor_ablation": tbl})
+        art = wandb.Artifact(name=f"preflight-a-{args.variant}", type="preflight",
+                             metadata={"descriptors": DESCRIPTORS})
+        for suf in (".ablation.json", ".dims.json"):
+            if Path(f"{prefix}{suf}").exists():
+                art.add_file(f"{prefix}{suf}")
+        run.log_artifact(art)
+        wandb.finish()
+    elif args.wandb_project and wandb is None:
+        print("[warn] --wandb_project given but wandb is not importable; skipping W&B")
 
     print(f"\nNext: eval_downstream_iemocap.py --feat_prefix {prefix}")
 

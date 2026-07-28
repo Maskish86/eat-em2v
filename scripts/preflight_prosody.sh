@@ -55,6 +55,9 @@ python baselines/downstream/preflight_prosody_features.py \
   --variant summary \
   --batch_size "${PREFLIGHT_BATCH_SIZE:-16}" \
   --num_workers 4 \
+  ${WANDB_PROJECT:+--wandb_project "${WANDB_PROJECT}"} \
+  ${WANDB_GROUP:+--wandb_group "${WANDB_GROUP}-preflight"} \
+  --wandb_name "preflight-descriptors-${BACKBONE_TYPE:-eat_original}" \
   | tee "${PREFLIGHT_OUT}/a1_summary_features.log"
 
 python baselines/downstream/eval_downstream_iemocap.py \
@@ -115,6 +118,9 @@ python baselines/downstream/preflight_prosody_features.py \
   ${CONTOUR_NORM_ARGS[@]+"${CONTOUR_NORM_ARGS[@]}"} \
   --batch_size "${PREFLIGHT_BATCH_SIZE:-16}" \
   --num_workers 4 \
+  ${WANDB_PROJECT:+--wandb_project "${WANDB_PROJECT}"} \
+  ${WANDB_GROUP:+--wandb_group "${WANDB_GROUP}-preflight"} \
+  --wandb_name "preflight-descriptors-contour-${BACKBONE_TYPE:-eat_original}" \
   | tee "${PREFLIGHT_OUT}/a2_contour_features.log"
 
 python baselines/downstream/eval_downstream_iemocap.py \
@@ -154,6 +160,9 @@ python baselines/downstream/preflight_prosody_r2.py \
   --prosody_prefix "${B_TARGET}" \
   --label "${BACKBONE_TYPE:-eat_original}" \
   --output_json "${PREFLIGHT_OUT}/prosody_r2_${BACKBONE_TYPE:-eat_original}.json" \
+  ${WANDB_PROJECT:+--wandb_project "${WANDB_PROJECT}"} \
+  ${WANDB_GROUP:+--wandb_group "${WANDB_GROUP}-preflight"} \
+  --wandb_name "preflight-r2-${BACKBONE_TYPE:-eat_original}" \
   | tee "${PREFLIGHT_OUT}/b_prosody_r2.log"
 
 echo
