@@ -72,17 +72,29 @@ SESSION_SIZES = [1085, 1023, 1151, 1031, 1241]
 
 
 def _loso_linear_acc(X, y, n_classes, alpha=1.0):
-    """Accuracy of a closed-form linear classifier under 5-fold LOSO.
+    """WA, UA and per-class recall of a closed-form linear classifier, 5-fold LOSO.
 
     Ridge regression onto one-hot targets, argmax at test time. Deterministic,
     dependency-free, and seconds to run -- this is an *indicator* for comparing
     feature subsets against each other, NOT a replacement for the real probe in
     eval_downstream_iemocap.py (which is an MLP with a different optimizer). Read
     the differences between rows, not the absolute values.
+
+    Reports the same triple the real eval does, because WA alone would mislead on
+    exactly the descriptor most at risk. Centroid is the only valence-axis
+    descriptor, and IEMOCAP's ang/hap contrast is a valence pair at comparable
+    arousal -- a feature that helps one class pair barely moves overall accuracy
+    while clearly moving per-class recall. Judging it on WA would read "dead
+    weight" when UA says otherwise.
+
+    Note the floors differ: WA's is the majority-class rate, UA's is 1/n_classes
+    (a majority classifier scores 100% on one class and 0% on the rest).
     """
     bounds = np.cumsum([0] + SESSION_SIZES)
     Y = np.eye(n_classes)[y]
     correct = total = 0
+    cls_correct = np.zeros(n_classes, dtype=np.int64)
+    cls_total = np.zeros(n_classes, dtype=np.int64)
     for i in range(5):
         te = np.zeros(X.shape[0], dtype=bool)
         te[bounds[i]:bounds[i + 1]] = True
@@ -110,7 +122,17 @@ def _loso_linear_acc(X, y, n_classes, alpha=1.0):
         pred = (Xs[te] @ W + ym).argmax(1)
         correct += int((pred == y[te]).sum())
         total += int(te.sum())
-    return correct / total
+        for c in range(n_classes):
+            m = y[te] == c
+            cls_total[c] += int(m.sum())
+            cls_correct[c] += int((pred[m] == c).sum())
+
+    recall = np.where(cls_total > 0, cls_correct / np.maximum(cls_total, 1), np.nan)
+    return {
+        "wa": correct / total,
+        "ua": float(np.nanmean(recall)),
+        "recall": recall,
+    }
 
 
 def descriptor_ablation(X, names, labels, floor, candidates=()):
@@ -151,21 +173,31 @@ def descriptor_ablation(X, names, labels, floor, candidates=()):
         for d in DESCRIPTORS:
             rows.append((f"[{c}] for {d}", [i for i in trained if i not in cols[d]] + cols[c]))
 
+    ua_floor = 1.0 / len(classes)
     print("\n--- descriptor ablation (indicative linear probe, not the real one) ---")
-    print(f"{'subset':<30} {'dims':>5} {'acc %':>7} {'vs floor':>9} {'vs all':>8}")
-    all_acc = None
+    print(f"{'subset':<30} {'dims':>5} {'WA %':>7} {'UA %':>7} {'dWA':>7} {'dUA':>7}")
+    base = None
     out = {}
     for name, idx in rows:
         if not idx:
             continue
-        acc = _loso_linear_acc(X[:, idx], y, len(classes))
-        if all_acc is None:
-            all_acc = acc
-        out[name] = acc
-        delta_all = "" if name == "all three" else f"{(acc - all_acc) * 100:+8.2f}"
-        print(f"{name:<30} {len(idx):>5} {acc * 100:>7.2f} {(acc - floor) * 100:>+9.2f} {delta_all:>8}")
-    print("Read the DIFFERENCES between rows. A descriptor whose 'without' row is")
-    print("flat against 'all three' is not contributing on top of the other two.")
+        r = _loso_linear_acc(X[:, idx], y, len(classes))
+        if base is None:
+            base = r
+        out[name] = {
+            "wa": r["wa"], "ua": r["ua"],
+            "recall": {c: (None if np.isnan(v) else float(v)) for c, v in zip(classes, r["recall"])},
+        }
+        dwa = "" if name == "all three" else f"{(r['wa'] - base['wa']) * 100:+7.2f}"
+        dua = "" if name == "all three" else f"{(r['ua'] - base['ua']) * 100:+7.2f}"
+        print(f"{name:<30} {len(idx):>5} {r['wa'] * 100:>7.2f} {r['ua'] * 100:>7.2f} {dwa:>7} {dua:>7}")
+
+    print(f"floors: WA {floor * 100:.2f}% (majority class) | UA {ua_floor * 100:.2f}% (1/{len(classes)})")
+    print("Read the DIFFERENCES between rows, not the absolute values. A descriptor")
+    print("whose 'without' row is flat is not contributing on top of the others.")
+    print("dUA is the sensitive one: a descriptor that helps a single class pair --")
+    print(f"e.g. the valence contrast {classes[0]}/{classes[1] if len(classes) > 1 else '?'} at similar arousal -- moves UA while")
+    print("leaving WA almost unchanged. Per-class recall is in the .ablation.json.")
     return out
 
 

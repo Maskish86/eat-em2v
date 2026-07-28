@@ -104,27 +104,46 @@ def _join_with_ablation(args, grouped, descs):
         return None
 
     abl = json.loads(Path(cand).read_text())
-    acc, floor = abl.get("accuracy", {}), abl.get("mean_per_fold_majority", 0.0)
-    print(f"\n--- joined: emotion relevance (A) x encoder decodability (B) ---")
-    print(f"{'descriptor':<16} {'A: only %':>10} {'A: marginal':>12} {'B: R2':>8}  verdict")
+    acc, wa_floor = abl.get("accuracy", {}), abl.get("mean_per_fold_majority", 0.0)
+
+    def _m(key, metric):
+        """Rows are {'wa','ua','recall'} dicts; tolerate the older float format."""
+        v = acc.get(key)
+        if v is None:
+            return None
+        return v.get(metric) if isinstance(v, dict) else v
+
+    # UA is the relevance metric, not WA. A descriptor that separates one class
+    # pair -- the ang/hap valence contrast at comparable arousal is the case in
+    # point -- barely moves overall accuracy while clearly moving per-class
+    # recall. Judging relevance on WA would retire exactly that descriptor.
+    n_cls = next((len(v["recall"]) for v in acc.values()
+                  if isinstance(v, dict) and v.get("recall")), 4)
+    ua_floor = 1.0 / n_cls
+    print("\n--- joined: emotion relevance (A) x encoder decodability (B) ---")
+    print(f"{'descriptor':<16} {'A: UA only':>11} {'A: dUA drop':>12} {'B: R2':>8}  verdict")
     rows = {}
     for d in descs:
-        only = acc.get(f"{d} only")
-        marg = acc.get("all three", 0) - acc.get(f"without {d}", 0) if f"without {d}" in acc else None
+        only_ua, only_wa = _m(f"{d} only", "ua"), _m(f"{d} only", "wa")
+        base_ua = _m("all three", "ua")
+        drop = (base_ua - _m(f"without {d}", "ua")) if _m(f"without {d}", "ua") is not None else None
         r2 = grouped.get(d)
-        relevant = only is not None and (only - floor) > 0.02
+        relevant = only_ua is not None and (only_ua - ua_floor) > 0.02
         novel = r2 is not None and r2 < 0.5
         verdict = ("keep/promote" if relevant and novel else
                    "already encoded" if relevant else
-                   "no emotion signal" if only is not None else "-")
-        rows[d] = {"only_acc": only, "marginal_acc": marg, "r2": r2, "verdict": verdict}
-        print(f"{d:<16} {only * 100 if only is not None else float('nan'):>10.2f} "
-              f"{marg * 100 if marg is not None else float('nan'):>12.2f} "
+                   "no emotion signal" if only_ua is not None else "-")
+        rows[d] = {"only_ua": only_ua, "only_wa": only_wa, "ua_drop": drop,
+                   "r2": r2, "verdict": verdict}
+        print(f"{d:<16} {only_ua * 100 if only_ua is not None else float('nan'):>11.2f} "
+              f"{drop * 100 if drop is not None else float('nan'):>12.2f} "
               f"{r2 if r2 is not None else float('nan'):>8.3f}  {verdict}")
-    print("A: only %    = accuracy from that descriptor alone (floor "
-          f"{floor * 100:.2f}%)")
-    print("A: marginal  = accuracy lost by removing it (training descriptors only)")
+    print(f"A: UA only   = UA from that descriptor alone (UA floor {ua_floor * 100:.2f}%, "
+          f"WA floor {wa_floor * 100:.2f}%)")
+    print("A: dUA drop  = UA lost by removing it (training descriptors only)")
     print("B: R2        = how well the frozen encoder already predicts it")
+    print("UA not WA, deliberately: a descriptor carrying one class pair moves UA")
+    print("and barely moves WA. Per-class recall is in the ablation JSON.")
     print("Thresholds are crude (relevance >2pt over floor, novelty R2<0.5) -- read")
     print("the numbers, not the verdict column.")
     return rows
