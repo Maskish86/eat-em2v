@@ -17,17 +17,20 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 # --- load the helper functions out of pretrain_eat.py without importing fairseq
 src = (REPO / "baselines/models/pretrain_eat.py").read_text()
 tree = ast.parse(src)
-wanted = {"prosody_valid_time", "compute_prosody", "prosody_interp_baseline", "_r2"}
+wanted = {"prosody_valid_time", "compute_prosody", "prosody_interp_baseline", "_r2",
+          "mel_band_indices", "compute_prosody_candidates"}
 mod = ast.Module(
     body=[n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted],
     type_ignores=[],
 )
 ns = types.SimpleNamespace()
-g = {"torch": torch, "math": math}
+g = {"torch": torch, "math": math, "np": __import__("numpy")}
 exec(compile(mod, "<helpers>", "exec"), g)
 prosody_valid_time = g["prosody_valid_time"]
 compute_prosody = g["compute_prosody"]
 prosody_interp_baseline = g["prosody_interp_baseline"]
+mel_band_indices = g["mel_band_indices"]
+compute_prosody_candidates = g["compute_prosody_candidates"]
 _r2 = g["_r2"]
 assert wanted <= set(g), sorted(wanted - set(g))
 
@@ -208,5 +211,29 @@ Yb = Yt + 100.0
 pb = _pf_r2.ridge_fit_predict(Xt[:200], Yb[:200], Xt[200:], 10.0)
 assert np.abs(pb.mean() - 100.0) < 5.0, f"intercept shrunk toward 0: {pb.mean()}"
 print("ok  ridge_fit_predict: intercept is not penalized")
+
+# --- probe-only candidates (alpha ratio, Hammarberg): eGeMAPS minimalistic-set
+# spectral-balance parameters, exact from log-mel as log-domain differences.
+a_lo, a_hi = mel_band_indices(M, 16000, 50.0, 1000.0), mel_band_indices(M, 16000, 1000.0, 5000.0)
+assert a_lo[1] == a_hi[0], (a_lo, a_hi)          # contiguous, no gap or overlap
+assert mel_band_indices(64, 16000, 50.0, 1000.0) != a_lo, "bands not derived from n_mels"
+assert mel_band_indices(M, 32000, 50.0, 1000.0) != a_lo, "bands not derived from sample_rate"
+print(f"ok  mel_band_indices: derived, contiguous (alpha {a_lo} | {a_hi})")
+
+cand = compute_prosody_candidates(S_log, vt, N_TIME, PF)
+assert cand.shape == (B, 2, N_TIME), cand.shape
+assert torch.isfinite(cand).all()
+assert (cand[2, :, 32:] == 0).all(), "candidates must zero padded patches like compute_prosody"
+print(f"ok  compute_prosody_candidates: shape {tuple(cand.shape)}, finite, pad zeroed")
+
+# both are DIFFERENCES of log-domain quantities -> exactly gain invariant
+gain = 2.0 * math.log(1.5)                        # worst-case roll_mag_aug gain
+shifted = compute_prosody_candidates(S_log + gain, vt, N_TIME, PF)
+assert (cand - shifted).abs().max() < 1e-3, (cand - shifted).abs().max()
+print(f"ok  candidates are gain-invariant (max drift {(cand - shifted).abs().max():.2e})")
+
+# training target is untouched by the candidates existing
+assert compute_prosody(S_log, vt, N_TIME, PF, "none").shape == (B, 3, N_TIME)
+print("ok  training target still 3-dim -- candidates are probe-only")
 
 print("\nall checks passed")

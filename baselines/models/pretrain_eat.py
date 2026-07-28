@@ -144,6 +144,62 @@ def compute_prosody(S_log, valid_time, n_time_patches, patch_frames, norm, corpu
     return p * vt
 
 
+# --- probe-only descriptor candidates -------------------------------------
+# NOT used in training. compute_prosody above is the training target and is
+# untouched; these exist so Pre-flight A can report whether a candidate earns a
+# place in it, before a run is spent and before the target becomes expensive to
+# change. Promoting one is a deliberate edit to compute_prosody, not a flag.
+
+PROSODY_CANDIDATES = ["alpha_ratio", "hammarberg"]
+
+
+def mel_band_indices(n_mels, sample_rate, f_lo, f_hi, low_freq=20.0, high_freq=None):
+    """Mel-bin indices whose centre frequency falls in [f_lo, f_hi).
+
+    Derived from n_mels / sample_rate rather than hardcoded: the band edges move
+    if either changes, and a stale constant would silently select the wrong part
+    of the spectrum. Defaults match torchaudio's kaldi fbank (low_freq=20,
+    high_freq=Nyquist), which is what raw_audio_dataset.py:392 calls.
+    """
+    high_freq = high_freq if high_freq else sample_rate / 2.0
+    to_mel = lambda f: 1127.0 * math.log(1.0 + f / 700.0)
+    edges = np.linspace(to_mel(low_freq), to_mel(high_freq), n_mels + 2)
+    centers = edges[1:-1]
+    sel = np.where((centers >= to_mel(f_lo)) & (centers < to_mel(f_hi)))[0]
+    assert len(sel), f"no mel bins in [{f_lo}, {f_hi}) Hz at n_mels={n_mels}, sr={sample_rate}"
+    return int(sel[0]), int(sel[-1]) + 1
+
+
+def compute_prosody_candidates(S_log, valid_time, n_time_patches, patch_frames, sample_rate=16000):
+    """Raw (unnormalized) candidate descriptors, for the pre-flight probe only.
+
+    Both are eGeMAPS *minimalistic-set* spectral-balance parameters, and both are
+    exactly computable from log-mel as DIFFERENCES of log-domain quantities --
+    which makes them exactly gain-invariant, unlike their linear-magnitude
+    definitions:
+
+      alpha ratio  log energy 50-1000 Hz  minus  log energy 1-5 kHz
+      hammarberg   log peak   0-2000 Hz   minus  log peak   2-5 kHz
+
+    Returns (B, 2, n_time_patches), zeroed at invalid patches, matching
+    compute_prosody's convention so the two can be concatenated.
+    """
+    B, T, M = S_log.shape
+    a_lo = mel_band_indices(M, sample_rate, 50.0, 1000.0)
+    a_hi = mel_band_indices(M, sample_rate, 1000.0, 5000.0)
+    h_lo = mel_band_indices(M, sample_rate, 0.0, 2000.0)
+    h_hi = mel_band_indices(M, sample_rate, 2000.0, 5000.0)
+
+    alpha = (torch.logsumexp(S_log[..., a_lo[0]:a_lo[1]], dim=-1)
+             - torch.logsumexp(S_log[..., a_hi[0]:a_hi[1]], dim=-1))
+    hamm = (S_log[..., h_lo[0]:h_lo[1]].amax(-1)
+            - S_log[..., h_hi[0]:h_hi[1]].amax(-1))
+
+    p = torch.stack([alpha, hamm], dim=1)                       # (B, 2, T)
+    p = p.view(B, 2, n_time_patches, patch_frames).mean(-1)
+    return p * valid_time.unsqueeze(1).to(p.dtype)
+
+
 def prosody_interp_baseline(target, anchor):
     """Linear interpolation of `target` from the nearest anchor columns.
 
