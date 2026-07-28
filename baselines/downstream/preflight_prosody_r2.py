@@ -106,12 +106,28 @@ def _join_with_ablation(args, grouped, descs):
     abl = json.loads(Path(cand).read_text())
     acc, wa_floor = abl.get("accuracy", {}), abl.get("mean_per_fold_majority", 0.0)
 
+    if any(not isinstance(v, dict) for v in acc.values()):
+        print(f"\n[warn] {cand} predates the WA/UA split (bare floats). Those are WA,")
+        print("       and reading them as UA would compare a WA number against the UA")
+        print("       floor -- a descriptor below its own WA floor would read 'relevant'.")
+        print("       Re-run Pre-flight A; skipping the joined view.")
+        return None
+
     def _m(key, metric):
-        """Rows are {'wa','ua','recall'} dicts; tolerate the older float format."""
+        """Look up a row, accepting the bracketed key form used for candidates."""
         v = acc.get(key)
-        if v is None:
-            return None
-        return v.get(metric) if isinstance(v, dict) else v
+        return None if v is None else v.get(metric)
+
+    # descriptor_ablation uses three key shapes, and they are NOT one pattern:
+    #   incumbents  "centroid only"      /  "without centroid"   <- kind moves
+    #   candidates  "[alpha_ratio] only"  (no "without" row exists)
+    # Matching only "<d> only" misses every candidate; building "<d> without"
+    # misses every incumbent. Both mistakes print nan rather than failing.
+    def _row(d, kind):
+        for key in ((f"[{d}] only", f"{d} only") if kind == "only" else (f"without {d}",)):
+            if key in acc:
+                return key
+        return None
 
     # UA is the relevance metric, not WA. A descriptor that separates one class
     # pair -- the ang/hap valence contrast at comparable arousal is the case in
@@ -124,9 +140,12 @@ def _join_with_ablation(args, grouped, descs):
     print(f"{'descriptor':<16} {'A: UA only':>11} {'A: dUA drop':>12} {'B: R2':>8}  verdict")
     rows = {}
     for d in descs:
-        only_ua, only_wa = _m(f"{d} only", "ua"), _m(f"{d} only", "wa")
+        k_only, k_wo = _row(d, "only"), _row(d, "without")
+        only_ua = _m(k_only, "ua") if k_only else None
+        only_wa = _m(k_only, "wa") if k_only else None
         base_ua = _m("all three", "ua")
-        drop = (base_ua - _m(f"without {d}", "ua")) if _m(f"without {d}", "ua") is not None else None
+        wo_ua = _m(k_wo, "ua") if k_wo else None
+        drop = (base_ua - wo_ua) if (base_ua is not None and wo_ua is not None) else None
         r2 = grouped.get(d)
         relevant = only_ua is not None and (only_ua - ua_floor) > 0.02
         novel = r2 is not None and r2 < 0.5
@@ -188,11 +207,14 @@ def main():
     # works for the training three and for the "+candidates" prefix alike rather
     # than hardcoding a width.
     descs, stats = list(DESCRIPTORS), list(STATS)
+    trained = None
     dims_path = Path(f"{args.prosody_prefix}.dims.json")
     if dims_path.exists():
         meta = json.loads(dims_path.read_text())
         descs = meta.get("descriptors", descs)
         stats = meta.get("stats", stats)
+        trained = meta.get("training_descriptors")
+    trained = trained or list(DESCRIPTORS)
     assert Y.shape[1] == len(descs) * len(stats), (
         f"expected {len(descs) * len(stats)} dims for descriptors {descs}, got "
         f"{Y.shape[1]}. Pass --variant summary to preflight_prosody_features.py."
@@ -271,10 +293,19 @@ def main():
     print(f"{'dim':<20} {'R2':>8} {'+-':>7}")
     for n, m, s in zip(names, r2_mean, r2_std):
         print(f"{n:<20} {m:>8.4f} {s:>7.4f}")
+    # The pooled number MUST be scoped to the training descriptors. Pointed at the
+    # +candidates prefix it would otherwise average over probe-only descriptors and
+    # silently stop being comparable to any previously stored baseline -- while the
+    # script tells you to record it next to the 67.07% reference.
+    in_target = [d for d in descs if d in trained]
+    overall = float(np.mean([grouped[d] for d in in_target])) if in_target else float("nan")
     print(f"\n{'per-descriptor R2':<20}")
     for d, v in grouped.items():
-        print(f"  {d:<18} {v:>8.4f}")
-    print(f"  {'OVERALL':<18} {r2_mean.mean():>8.4f}")
+        mark = "" if d in trained else "   (probe-only candidate)"
+        print(f"  {d:<18} {v:>8.4f}{mark}")
+    print(f"  {'OVERALL':<18} {overall:>8.4f}   <- training descriptors only ({', '.join(in_target)})")
+    if len(in_target) != len(descs):
+        print(f"  {'(incl. candidates)':<18} {r2_mean.mean():>8.4f}   not a baseline -- do not record")
     print(
         "\nBaseline run: store these next to the 67.07% frozen-EAT reference.\n"
         "Post-training run: the claim is that these ROSE, tracking the WA gain."
@@ -295,7 +326,9 @@ def main():
                 "per_dim_r2_std": dict(zip(names, r2_std.tolist())),
                 "per_descriptor_r2": grouped,
                 "joined_with_ablation": joined,
-                "overall_r2": float(r2_mean.mean()),
+                "overall_r2": overall,
+                "overall_r2_all_dims": float(r2_mean.mean()),
+                "training_descriptors": trained,
                 "per_fold": [{"fold": f["fold"], "alpha": f["alpha"], "r2": f["r2"].tolist()} for f in per_fold],
             },
             f,

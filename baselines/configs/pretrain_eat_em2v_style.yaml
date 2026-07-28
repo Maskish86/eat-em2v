@@ -62,6 +62,11 @@ criterion:
     # means prosody_denorm_mean/std no longer match the dataset's normalization
     # and padded frames are contaminating the target -- silently.
     - prosody_frac_padded
+    # fraction of ranks that had something to score on a diagnostic step. The
+    # r2 gap is compressed by (N-k)/N with k empty ranks, so the true gap is
+    # (r2_model - r2_interp) / prosody_diag_frac. Without this key that
+    # correction is unobtainable and the gap reads biased toward "trivial".
+    - prosody_diag_frac
 
 optimization:
   max_update: 150_000

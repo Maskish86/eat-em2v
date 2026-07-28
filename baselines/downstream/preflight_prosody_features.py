@@ -108,9 +108,11 @@ def _loso_linear_acc(X, y, n_classes, alpha=1.0):
         #   so an unscaled ridge would rank descriptors by numeric size rather
         #   than information -- and this table is what the "does flux earn its
         #   place" decision is read off.
-        # leak  -- fitting on train rows only keeps this ablation free of the
-        #   transductive caveat that applies to the written-out features, so the
-        #   two numbers are not contaminated by the same thing.
+        # leak  -- fitting on train rows only. This is only actually leak-free
+        #   because callers pass the PRE-z-score matrix; standardizing per fold
+        #   on top of a corpus-wide z-score would not undo it, and the ablation
+        #   would silently inherit the same transductive caveat as the written
+        #   features.
         mu = X[tr].mean(0, keepdims=True)
         sd = X[tr].std(0, keepdims=True)
         sd = np.where(sd > 1e-8, sd, 1.0)
@@ -367,11 +369,11 @@ def main():
                 # Probe-only candidates, appended for the ablation only. The
                 # written feature file is sliced back to the training three
                 # below, so the headline WA still answers "do the TRAINING
-                # targets carry emotion" rather than a 5-descriptor superset.
+                # targets carry emotion" rather than a 6-descriptor superset.
                 pc = compute_prosody_candidates(
                     S_log, valid_time, n_time, args.patch_size, args.sample_rate
                 )
-                x = torch.cat([x, summary_stats(pc, valid_time)], dim=-1)   # (B, 25)
+                x = torch.cat([x, summary_stats(pc, valid_time)], dim=-1)   # (B, 30)
             else:
                 p = compute_prosody(
                     S_log,
@@ -399,6 +401,14 @@ def main():
             f"col {bad[0][1]}). An utterance with zero valid patches would do this."
         )
 
+    # Snapshot BEFORE the corpus z-score. The ablation standardizes per fold on
+    # training rows anyway, so the corpus scaling is redundant for it -- and
+    # passing the scaled matrix would mean the ablation inherits the same
+    # transductive leak as the written features, which is exactly what the
+    # per-fold fit was supposed to avoid. Feeding it the raw values makes the
+    # ablation leak-free on the default path, not only under --no_zscore.
+    X_raw = X.copy()
+
     if not args.no_zscore:
         mu, sd = X.mean(0, keepdims=True), X.std(0, keepdims=True)
         # A constant dim (sd==0) carries no information; leave it at zero rather
@@ -420,9 +430,9 @@ def main():
 
     # The candidates are for the ablation only -- the file eval_downstream_iemocap.py
     # probes must contain exactly the training target, or the headline WA would
-    # answer a question about a 5-descriptor superset nobody trains on.
+    # answer a question about a 6-descriptor superset nobody trains on.
     n_trained = len(DESCRIPTORS) * len(STATS)
-    X_all = X
+    X_all = X_raw
     X = X_all[:, :n_trained] if args.variant == "summary" else X_all
 
     prefix = Path(args.output_prefix)
@@ -461,11 +471,23 @@ def main():
         with open(f"{alt}.dims.json", "w") as f:
             json.dump({"variant": args.variant, "prosody_norm": norm_used,
                        "descriptors": DESCRIPTORS + list(PROSODY_CANDIDATES),
+                       "training_descriptors": DESCRIPTORS,
                        "stats": STATS, "dims": names,
                        "note": "training descriptors + probe-only candidates; for "
                                "preflight_prosody_r2.py, not for the downstream eval"},
                       f, indent=2)
         print(f"Wrote {alt}.npy  shape={X_all.shape}  (training + candidates, for Pre-flight B)")
+    elif args.variant == "summary":
+        # No candidates this run (e.g. one was promoted into DESCRIPTORS and the
+        # list emptied). A stale _all from a previous descriptor set would still
+        # satisfy the shell's `[ -f ]` check and send B against the wrong target
+        # with the wrong dims.json -- and the utterance-order cross-check would
+        # pass, because the corpus has not changed. Remove it.
+        for suf in (".npy", ".lengths", ".emo", ".dims.json"):
+            stale = Path(f"{prefix}_all{suf}")
+            if stale.exists():
+                stale.unlink()
+                print(f"[info] removed stale {stale.name} (no candidates this run)")
 
     vp = np.array(n_valid_patches)
     lab = np.array([e.split()[1] for e in emo_entries])
