@@ -144,9 +144,14 @@ if [ ! -f "${FEAT_PREFIX}.npy" ]; then
   exit 1
 fi
 
+# _summary_all carries the probe-only candidates too, so the R2 table and the
+# joined view cover them. Falls back to _summary if A did not emit it.
+B_TARGET="${PROSODY_PREFIX}_summary_all"
+[ -f "${B_TARGET}.npy" ] || B_TARGET="${PROSODY_PREFIX}_summary"
+
 python baselines/downstream/preflight_prosody_r2.py \
   --feat_prefix "${FEAT_PREFIX}" \
-  --prosody_prefix "${PROSODY_PREFIX}_summary" \
+  --prosody_prefix "${B_TARGET}" \
   --label "${BACKBONE_TYPE:-eat_original}" \
   --output_json "${PREFLIGHT_OUT}/prosody_r2_${BACKBONE_TYPE:-eat_original}.json" \
   | tee "${PREFLIGHT_OUT}/b_prosody_r2.log"

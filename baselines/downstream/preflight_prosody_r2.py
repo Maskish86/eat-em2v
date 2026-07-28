@@ -78,8 +78,63 @@ def ridge_fit_predict(X_tr, Y_tr, X_te, alpha):
     return (X_te - xm) @ W + ym
 
 
+def _join_with_ablation(args, grouped, descs):
+    """Pair each descriptor's emotion-relevance (Pre-flight A) with its
+    encoder-decodability (Pre-flight B).
+
+    Neither number decides anything alone. A descriptor worth adding as a pretext
+    target has to be emotion-relevant AND not already decodable from the encoder:
+
+                        already decodable      not decodable
+      carries emotion   teaches little         <- the one you want
+      no emotion        drop                   drop
+
+    Cross-referencing two files by hand is how that pairing gets skipped, so it is
+    printed here whenever the ablation JSON can be found.
+    """
+    cand = args.ablation_json
+    if cand is None:
+        p = str(args.prosody_prefix)
+        guesses = [f"{p}.ablation.json"]
+        if p.endswith("_all"):          # B is usually pointed at the +candidates prefix
+            guesses.append(f"{p[:-4]}.ablation.json")
+        cand = next((g for g in guesses if Path(g).exists()), None)
+    if cand is None or not Path(cand).exists():
+        print("\n(no ablation JSON found -- run Pre-flight A first for the joined view)")
+        return None
+
+    abl = json.loads(Path(cand).read_text())
+    acc, floor = abl.get("accuracy", {}), abl.get("mean_per_fold_majority", 0.0)
+    print(f"\n--- joined: emotion relevance (A) x encoder decodability (B) ---")
+    print(f"{'descriptor':<16} {'A: only %':>10} {'A: marginal':>12} {'B: R2':>8}  verdict")
+    rows = {}
+    for d in descs:
+        only = acc.get(f"{d} only")
+        marg = acc.get("all three", 0) - acc.get(f"without {d}", 0) if f"without {d}" in acc else None
+        r2 = grouped.get(d)
+        relevant = only is not None and (only - floor) > 0.02
+        novel = r2 is not None and r2 < 0.5
+        verdict = ("keep/promote" if relevant and novel else
+                   "already encoded" if relevant else
+                   "no emotion signal" if only is not None else "-")
+        rows[d] = {"only_acc": only, "marginal_acc": marg, "r2": r2, "verdict": verdict}
+        print(f"{d:<16} {only * 100 if only is not None else float('nan'):>10.2f} "
+              f"{marg * 100 if marg is not None else float('nan'):>12.2f} "
+              f"{r2 if r2 is not None else float('nan'):>8.3f}  {verdict}")
+    print("A: only %    = accuracy from that descriptor alone (floor "
+          f"{floor * 100:.2f}%)")
+    print("A: marginal  = accuracy lost by removing it (training descriptors only)")
+    print("B: R2        = how well the frozen encoder already predicts it")
+    print("Thresholds are crude (relevance >2pt over floor, novelty R2<0.5) -- read")
+    print("the numbers, not the verdict column.")
+    return rows
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--ablation_json", default=None,
+                    help="Pre-flight A's <prefix>.ablation.json, for the joined view. "
+                         "Auto-located next to --prosody_prefix when omitted.")
     ap.add_argument("--feat_prefix", required=True, help="Encoder features (from extract_eat_iemocap_features.py).")
     ap.add_argument("--prosody_prefix", required=True, help="Summary target (preflight_prosody_features.py --variant summary).")
     ap.add_argument("--alpha", type=float, nargs="+", default=[1.0, 10.0, 100.0, 1000.0],
@@ -110,9 +165,18 @@ def main():
     X = mean_pool(feats, offsets)
     Y = mean_pool(p_feats, p_offsets)  # 1 frame per utterance, so this is identity
 
-    assert Y.shape[1] == len(DESCRIPTORS) * len(STATS), (
-        f"expected a {len(DESCRIPTORS) * len(STATS)}-dim summary target, got {Y.shape[1]}. "
-        "Pass --variant summary to preflight_prosody_features.py."
+    # Descriptor grouping comes from the sidecar written by Pre-flight A, so this
+    # works for the training three and for the "+candidates" prefix alike rather
+    # than hardcoding a width.
+    descs, stats = list(DESCRIPTORS), list(STATS)
+    dims_path = Path(f"{args.prosody_prefix}.dims.json")
+    if dims_path.exists():
+        meta = json.loads(dims_path.read_text())
+        descs = meta.get("descriptors", descs)
+        stats = meta.get("stats", stats)
+    assert Y.shape[1] == len(descs) * len(stats), (
+        f"expected {len(descs) * len(stats)} dims for descriptors {descs}, got "
+        f"{Y.shape[1]}. Pass --variant summary to preflight_prosody_features.py."
     )
     # Assert rather than warn, matching preflight_prosody_features.py. The folds
     # are positional, so on a filtered subset the ridge would be fit across mixed
@@ -176,10 +240,10 @@ def main():
     r2 = np.stack([f["r2"] for f in per_fold])            # (folds, 15)
     r2_mean, r2_std = r2.mean(0), r2.std(0)
 
-    names = [f"{d}_{s}" for d in DESCRIPTORS for s in STATS]
+    names = [f"{d}_{s}" for d in descs for s in stats]
     grouped = {
-        d: float(r2_mean[j * len(STATS):(j + 1) * len(STATS)].mean())
-        for j, d in enumerate(DESCRIPTORS)
+        d: float(r2_mean[j * len(stats):(j + 1) * len(stats)].mean())
+        for j, d in enumerate(descs)
     }
 
     tag = args.label or Path(args.feat_prefix).name
@@ -197,6 +261,8 @@ def main():
         "Post-training run: the claim is that these ROSE, tracking the WA gain."
     )
 
+    joined = _join_with_ablation(args, grouped, descs)
+
     out = Path(args.output_json) if args.output_json else Path(f"{args.feat_prefix}.prosody_r2.json")
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:
@@ -209,6 +275,7 @@ def main():
                 "per_dim_r2_mean": dict(zip(names, r2_mean.tolist())),
                 "per_dim_r2_std": dict(zip(names, r2_std.tolist())),
                 "per_descriptor_r2": grouped,
+                "joined_with_ablation": joined,
                 "overall_r2": float(r2_mean.mean()),
                 "per_fold": [{"fold": f["fold"], "alpha": f["alpha"], "r2": f["r2"].tolist()} for f in per_fold],
             },

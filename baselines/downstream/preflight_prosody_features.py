@@ -408,8 +408,32 @@ def main():
         names = [f"{d}_t{t}" for d in DESCRIPTORS for t in range(n_time)]
     with open(f"{prefix}.dims.json", "w") as f:
         json.dump({"variant": args.variant, "prosody_norm": norm_used,
+                   "descriptors": DESCRIPTORS, "stats": STATS,
                    "dims": names[:X.shape[1]],
                    "ablation_only_dims": names[X.shape[1]:]}, f, indent=2)
+
+    if args.variant == "summary" and X_all.shape[1] > X.shape[1]:
+        # A second prefix carrying the candidates too, so Pre-flight B can report
+        # encoder-decodability for them as well. Without it a candidate gets an
+        # emotion-relevance score from the ablation but no R^2, and you would be
+        # promoting it without knowing whether the encoder already encodes it --
+        # which is exactly the pairing that decides whether a target teaches the
+        # model anything new. NOT for eval_downstream_iemocap.py: probing it would
+        # answer a question about a superset nobody trains on.
+        alt = Path(f"{prefix}_all")
+        np.save(f"{alt}.npy", X_all.astype(np.float32))
+        with open(f"{alt}.lengths", "w") as f:
+            f.writelines("1\n" for _ in range(X_all.shape[0]))
+        with open(f"{alt}.emo", "w") as f:
+            f.writelines(e + "\n" for e in emo_entries)
+        with open(f"{alt}.dims.json", "w") as f:
+            json.dump({"variant": args.variant, "prosody_norm": norm_used,
+                       "descriptors": DESCRIPTORS + list(PROSODY_CANDIDATES),
+                       "stats": STATS, "dims": names,
+                       "note": "training descriptors + probe-only candidates; for "
+                               "preflight_prosody_r2.py, not for the downstream eval"},
+                      f, indent=2)
+        print(f"Wrote {alt}.npy  shape={X_all.shape}  (training + candidates, for Pre-flight B)")
 
     vp = np.array(n_valid_patches)
     lab = np.array([e.split()[1] for e in emo_entries])
