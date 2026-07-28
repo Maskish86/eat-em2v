@@ -106,6 +106,16 @@ def _join_with_ablation(args, grouped, descs):
     abl = json.loads(Path(cand).read_text())
     acc, wa_floor = abl.get("accuracy", {}), abl.get("mean_per_fold_majority", 0.0)
 
+    # A only writes this file on the non---skip_session_check path, so a previous
+    # run's JSON can survive a run that did not produce one -- and pairing old UA
+    # numbers with fresh R2 numbers prints a confident verdict table built from two
+    # different runs, with nothing to signal it.
+    stamped = abl.get("descriptors")
+    if stamped is not None and list(stamped) != list(descs):
+        print(f"\n[warn] {cand} is for descriptors {stamped}, but this run has {list(descs)}.")
+        print("       Stale ablation JSON -- skipping the joined view. Re-run Pre-flight A.")
+        return None
+
     if any(not isinstance(v, dict) for v in acc.values()):
         print(f"\n[warn] {cand} predates the WA/UA split (bare floats). Those are WA,")
         print("       and reading them as UA would compare a WA number against the UA")
@@ -233,6 +243,17 @@ def main():
             "the result as the frozen-EAT baseline."
         )
 
+    # Columns belonging to the training target. Alpha selection must be scoped to
+    # these: chosen over all 30 dims it would be picked partly to fit the
+    # probe-only candidates, and a different alpha changes the training-descriptor
+    # R2 and therefore the pooled number the script says to store as the baseline.
+    # Scoping the average while leaving hyperparameter selection global would not
+    # fix the incomparability it exists to prevent.
+    n_stats = len(stats)
+    trained_cols = np.array(
+        [i * n_stats + j for i, d in enumerate(descs) if d in trained for j in range(n_stats)]
+    )
+
     bounds = np.cumsum([0] + SESSION_SIZES)
     n_folds = sum(1 for i in range(5) if bounds[i + 1] <= X.shape[0])
 
@@ -269,7 +290,8 @@ def main():
             pred = ridge_fit_predict(X[inner_tr], Y[inner_tr], X[inner_va], a)
             ss_res = ((pred - Y[inner_va]) ** 2).sum(0)
             ss_tot = ((Y[inner_va] - Y[inner_va].mean(0, keepdims=True)) ** 2).sum(0)
-            score = (1 - ss_res / (ss_tot + 1e-12)).mean()
+            r2_cols = 1 - ss_res / (ss_tot + 1e-12)
+            score = r2_cols[trained_cols].mean() if len(trained_cols) else r2_cols.mean()
             if score > best_score:
                 best_alpha, best_score = a, score
 

@@ -432,7 +432,16 @@ def main():
     # probes must contain exactly the training target, or the headline WA would
     # answer a question about a 6-descriptor superset nobody trains on.
     n_trained = len(DESCRIPTORS) * len(STATS)
-    X_all = X_raw
+    # Three matrices, and mixing them up is easy:
+    #   X_ablation  pre-z-score, full width -> descriptor_ablation ONLY, which
+    #               standardizes per fold and would otherwise inherit the leak
+    #   X_all       z-scored, full width    -> the _all file, Pre-flight B's target
+    #   X           z-scored, training dims -> the file eval_downstream_iemocap.py
+    #               probes; it feeds a Linear->ReLU MLP with no input
+    #               normalization, so raw dims spanning 1e-2..1e2 would condition
+    #               it badly and drive the headline WA toward the floor
+    X_ablation = X_raw
+    X_all = X
     X = X_all[:, :n_trained] if args.variant == "summary" else X_all
 
     prefix = Path(args.output_prefix)
@@ -483,11 +492,26 @@ def main():
         # satisfy the shell's `[ -f ]` check and send B against the wrong target
         # with the wrong dims.json -- and the utterance-order cross-check would
         # pass, because the corpus has not changed. Remove it.
-        for suf in (".npy", ".lengths", ".emo", ".dims.json"):
-            stale = Path(f"{prefix}_all{suf}")
-            if stale.exists():
-                stale.unlink()
-                print(f"[info] removed stale {stale.name} (no candidates this run)")
+        meta = Path(f"{prefix}_all.dims.json")
+        ours = False
+        if meta.exists():
+            try:
+                ours = "training_descriptors" in json.loads(meta.read_text())
+            except Exception:
+                ours = False
+        if ours:
+            # Only delete a prefix this script wrote -- `<name>_all` is a plausible
+            # name for an unrelated extraction, and an [info] line is thin cover for
+            # destroying one.
+            for suf in (".npy", ".lengths", ".emo", ".dims.json"):
+                stale = Path(f"{prefix}_all{suf}")
+                if stale.exists():
+                    stale.unlink()
+                    print(f"[info] removed stale {stale.name} (no candidates this run)")
+        elif meta.exists() or Path(f"{prefix}_all.npy").exists():
+            print(f"[warn] {prefix}_all.* exists but was not written by this script "
+                  "(no training_descriptors field); leaving it alone. Pre-flight B may "
+                  "pick it up -- delete it yourself if it is stale.")
 
     vp = np.array(n_valid_patches)
     lab = np.array([e.split()[1] for e in emo_entries])
@@ -529,7 +553,7 @@ def main():
         # over all 15 dims, and Pre-flight B measures decodability FROM the encoder,
         # which is the opposite direction.
         abl = descriptor_ablation(
-            X_all, names, lab, float(np.mean(fold_major)),
+            X_ablation, names, lab, float(np.mean(fold_major)),
             candidates=PROSODY_CANDIDATES if args.variant == "summary" else (),
         )
         with open(f"{prefix}.ablation.json", "w") as f:
@@ -537,6 +561,9 @@ def main():
                 {
                     "variant": args.variant,
                     "prosody_norm": norm_used,
+                    "descriptors": DESCRIPTORS + (list(PROSODY_CANDIDATES)
+                                                  if args.variant == "summary" else []),
+                    "n_utterances": int(X_ablation.shape[0]),
                     "mean_per_fold_majority": float(np.mean(fold_major)),
                     "accuracy": abl,
                     "note": "closed-form ridge-to-one-hot LOSO classifier; indicative "
