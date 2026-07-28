@@ -129,7 +129,17 @@ def descriptor_ablation(X, names, labels, floor, candidates=()):
     classes = sorted(set(labels))
     y = np.array([classes.index(l) for l in labels])
     every = list(DESCRIPTORS) + list(candidates)
-    cols = {d: [i for i, n in enumerate(names) if n.startswith(d + "_")] for d in every}
+
+    # Column blocks are computed arithmetically, NOT by name prefix. X/names are
+    # descriptor-major with equal block size, and prefix matching silently breaks
+    # the moment a candidate name extends an incumbent's: "flux_5k_mean"
+    # .startswith("flux_") is True, so cols["flux"] would swallow flux_5k and
+    # every subset row would be wrong while still printing plausible numbers.
+    assert len(names) % len(every) == 0, (len(names), len(every))
+    block = len(names) // len(every)
+    cols = {d: list(range(i * block, (i + 1) * block)) for i, d in enumerate(every)}
+    for i, d in enumerate(every):   # ordering assumption is load-bearing; check it
+        assert names[i * block].startswith(d), (names[i * block], d)
     trained = [i for d in DESCRIPTORS for i in cols[d]]
 
     rows = [("all three", trained)]

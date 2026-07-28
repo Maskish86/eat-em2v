@@ -150,7 +150,7 @@ def compute_prosody(S_log, valid_time, n_time_patches, patch_frames, norm, corpu
 # place in it, before a run is spent and before the target becomes expensive to
 # change. Promoting one is a deliberate edit to compute_prosody, not a flag.
 
-PROSODY_CANDIDATES = ["alpha_ratio", "hammarberg"]
+PROSODY_CANDIDATES = ["alpha_ratio", "hammarberg", "flux_5k"]
 
 
 def mel_band_indices(n_mels, sample_rate, f_lo, f_hi, low_freq=20.0, high_freq=None):
@@ -181,7 +181,14 @@ def compute_prosody_candidates(S_log, valid_time, n_time_patches, patch_frames, 
       alpha ratio  log energy 50-1000 Hz  minus  log energy 1-5 kHz
       hammarberg   log peak   0-2000 Hz   minus  log peak   2-5 kHz
 
-    Returns (B, 2, n_time_patches), zeroed at invalid patches, matching
+    The third candidate is not a new descriptor but a band-restricted `flux`.
+    eGeMAPS Eq. 10 fixes flux's spectral range to 0-5000 Hz; the training flux
+    spans all mel bins (~0-8000 Hz at 16 kHz), so it includes 5-8 kHz -- largely
+    fricative energy and noise, which is the band eGeMAPS deliberately excludes.
+    Whether that band helps or hurts is measurable rather than arguable, so it is
+    offered as a swap candidate against the incumbent flux.
+
+    Returns (B, 3, n_time_patches), zeroed at invalid patches, matching
     compute_prosody's convention so the two can be concatenated.
     """
     B, T, M = S_log.shape
@@ -189,14 +196,23 @@ def compute_prosody_candidates(S_log, valid_time, n_time_patches, patch_frames, 
     a_hi = mel_band_indices(M, sample_rate, 1000.0, 5000.0)
     h_lo = mel_band_indices(M, sample_rate, 0.0, 2000.0)
     h_hi = mel_band_indices(M, sample_rate, 2000.0, 5000.0)
+    f_lo, f_hi = mel_band_indices(M, sample_rate, 0.0, 5000.0)
 
     alpha = (torch.logsumexp(S_log[..., a_lo[0]:a_lo[1]], dim=-1)
              - torch.logsumexp(S_log[..., a_hi[0]:a_hi[1]], dim=-1))
     hamm = (S_log[..., h_lo[0]:h_lo[1]].amax(-1)
             - S_log[..., h_hi[0]:h_hi[1]].amax(-1))
 
-    p = torch.stack([alpha, hamm], dim=1)                       # (B, 2, T)
-    p = p.view(B, 2, n_time_patches, patch_frames).mean(-1)
+    # Same t=0 convention as compute_prosody (S_{-1} := S_0 -> flux[0] == 0), so
+    # the two differ only in the spectral range and stay comparable.
+    band = S_log[..., f_lo:f_hi]
+    flux5 = torch.cat(
+        [band.new_zeros(B, 1), torch.linalg.vector_norm(band[:, 1:] - band[:, :-1], dim=-1)],
+        dim=1,
+    )
+
+    p = torch.stack([alpha, hamm, flux5], dim=1)                # (B, 3, T)
+    p = p.view(B, 3, n_time_patches, patch_frames).mean(-1)
     return p * valid_time.unsqueeze(1).to(p.dtype)
 
 

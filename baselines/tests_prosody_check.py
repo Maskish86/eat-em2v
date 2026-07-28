@@ -221,7 +221,7 @@ assert mel_band_indices(M, 32000, 50.0, 1000.0) != a_lo, "bands not derived from
 print(f"ok  mel_band_indices: derived, contiguous (alpha {a_lo} | {a_hi})")
 
 cand = compute_prosody_candidates(S_log, vt, N_TIME, PF)
-assert cand.shape == (B, 2, N_TIME), cand.shape
+assert cand.shape == (B, 3, N_TIME), cand.shape
 assert torch.isfinite(cand).all()
 assert (cand[2, :, 32:] == 0).all(), "candidates must zero padded patches like compute_prosody"
 print(f"ok  compute_prosody_candidates: shape {tuple(cand.shape)}, finite, pad zeroed")
@@ -235,5 +235,18 @@ print(f"ok  candidates are gain-invariant (max drift {(cand - shifted).abs().max
 # training target is untouched by the candidates existing
 assert compute_prosody(S_log, vt, N_TIME, PF, "none").shape == (B, 3, N_TIME)
 print("ok  training target still 3-dim -- candidates are probe-only")
+
+# flux_5k is the incumbent flux restricted to 0-5 kHz (eGeMAPS Eq. 10's range),
+# so it must differ from it -- but only through the dropped band, not the
+# convention. Same t=0 rule: flux[0] == 0 on a constant signal.
+f_lo, f_hi = mel_band_indices(M, 16000, 0.0, 5000.0)
+assert (f_lo, f_hi) == (0, 107), (f_lo, f_hi)      # 21 of 128 bins dropped
+flux_full = compute_prosody(S_log, vt, N_TIME, PF, "none")[:, 2]
+flux_5k = cand[:, 2]
+assert not torch.allclose(flux_full, flux_5k), "flux_5k identical to flux -- band not applied"
+assert (flux_5k <= flux_full + 1e-4).all(), "a sub-band L2 norm cannot exceed the full-band one"
+cand_flat = compute_prosody_candidates(S_flat, vt_flat, N_TIME, PF)
+assert cand_flat[0, 2, 0] == 0, "flux_5k breaks the S_{-1} := S_0 convention"
+print(f"ok  flux_5k: bins [{f_lo}:{f_hi}], <= full-band flux, same t=0 convention")
 
 print("\nall checks passed")
