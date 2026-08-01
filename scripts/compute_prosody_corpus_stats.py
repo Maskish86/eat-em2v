@@ -32,6 +32,11 @@ from pathlib import Path
 import numpy as np
 import torch
 
+try:                      # optional: the job is useful without it
+    import wandb
+except Exception:
+    wandb = None
+
 from baselines.data.raw_audio_dataset import FileAudioDataset
 from baselines.models.pretrain_eat import compute_prosody, prosody_valid_time
 
@@ -58,6 +63,12 @@ def main():
     ap.add_argument("--batch_size", type=int, default=32)
     ap.add_argument("--num_workers", type=int, default=8)
     ap.add_argument("--max_utts", type=int, default=None, help="Stop after N utterances (smoke test only).")
+    ap.add_argument("--wandb_project", default=None,
+                    help="Log the six constants and the JSON artifact. This job runs for "
+                         "hours and its output is baked into every prosody_norm=corpus run "
+                         "thereafter; without W&B the provenance is one file on pod-local disk.")
+    ap.add_argument("--wandb_name", default=None)
+    ap.add_argument("--wandb_group", default=None)
     # These MUST match what mae_image_dataset.py:126-142 passes for the run whose
     # constants these become. They are surfaced as flags rather than hardcoded
     # because the task exposes them (h5_format, downsr_16hz) -- but the defaults
@@ -201,6 +212,34 @@ def main():
           + (f", {n_empty} utterances had NO valid patch" if n_empty else ""))
     for i, d in enumerate(DESCRIPTORS):
         print(f"  {d:<12} mean={mean[i]:>10.4f}  std={std[i]:>10.4f}")
+    if args.wandb_project and wandb is not None:
+        print(f"\nlogging to W&B: project={args.wandb_project} group={args.wandb_group}")
+        run = wandb.init(
+            project=args.wandb_project, group=args.wandb_group,
+            name=args.wandb_name or f"prosody-corpus-stats{'-smoke' if args.max_utts else ''}",
+            job_type="corpus_stats",
+            config={"manifest": args.manifest, "git_commit": out["git_commit"],
+                    "target_length": args.target_length, "patch_size": args.patch_size,
+                    "min_sample_size": args.min_sample_size, "max_utts": args.max_utts},
+        )
+        for i, d in enumerate(DESCRIPTORS):
+            wandb.summary[f"corpus_mean/{d}"] = float(mean[i])
+            wandb.summary[f"corpus_std/{d}"] = float(std[i])
+        wandb.summary["n_utterances"] = n_utts
+        wandb.summary["n_valid_patches"] = int(count[0])
+        wandb.summary["n_utterances_with_no_valid_patch"] = n_empty
+        # Independent cross-check: valid patches x 16 frames x 10 ms should recover
+        # the corpus duration. A large shortfall means pad detection is eating real
+        # speech; a large excess means padding is being counted as valid.
+        wandb.summary["valid_hours"] = int(count[0]) * args.patch_size * 0.010 / 3600.0
+        art = wandb.Artifact(name="prosody-corpus-stats", type="prosody_constants",
+                             metadata={"manifest": args.manifest, "git_commit": out["git_commit"]})
+        art.add_file(args.output_json)
+        run.log_artifact(art)
+        wandb.finish()
+    elif args.wandb_project and wandb is None:
+        print("[warn] --wandb_project given but wandb is not importable; skipping W&B")
+
     print(f"\nWrote {args.output_json}\n")
     print("Paste into the model block of the pretraining config, and keep the manifest")
     print(f"name and commit ({out['git_commit'][:8]}) in a comment beside them:\n")

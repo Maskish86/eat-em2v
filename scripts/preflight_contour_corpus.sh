@@ -96,9 +96,15 @@ for n, mu, sd in zip(names, m, s):
 bad = []
 if d.get("n_utterances_with_no_valid_patch"):
     bad.append("some utterances had NO valid patch -- pad detection or manifest is wrong")
-if not (-60 < m[0] < 0):
-    bad.append(f"log_energy mean {m[0]:.3f} is not a raw natural-log-mel value "
-               "(expect negative, order 1e1). Step 0 or norm='none' is wrong.")
+# logsumexp over 128 mel bins, NOT a per-bin value: logsumexp(x) >= max(x) >=
+# mean(x), and the dataset's S_log mean is -4.268, so this can never be below
+# ~-4.3 and there is no reason for it to be negative at all -- the sum adds up
+# to ln(128) ~ 4.85 on top of the largest bin. An earlier version of this check
+# required < 0 and would have rejected correct statistics.
+if not (-5.0 < m[0] < 25.0):
+    bad.append(f"log_energy mean {m[0]:.3f} is outside [-5, 25]; logsumexp over "
+               "128 bins of S_log (mean ~-4.27) should land near 0. Step 0 or "
+               "norm='none' is likely wrong.")
 if not (0 <= m[1] <= 127):
     bad.append(f"centroid mean {m[1]:.3f} is outside the mel-bin range 0-127")
 if min(s) <= 0:
@@ -116,6 +122,8 @@ if [ "${MODE}" = "--smoke" ]; then
     --manifest "${MANIFEST}" \
     --output_json "${STATS_JSON%.json}_SMOKE.json" \
     --max_utts 500 \
+    ${WANDB_PROJECT:+--wandb_project "${WANDB_PROJECT}"} \
+    ${WANDB_GROUP:+--wandb_group "${WANDB_GROUP}-preflight"} \
     | tee "${PREFLIGHT_OUT}/corpus_stats_smoke.log"
   echo; echo "--- sanity check ---"
   check_stats "${STATS_JSON%.json}_SMOKE.json"
@@ -133,6 +141,8 @@ if [ "${MODE}" != "--skip-stats" ]; then
     python scripts/compute_prosody_corpus_stats.py \
       --manifest "${MANIFEST}" \
       --output_json "${STATS_JSON}" \
+    ${WANDB_PROJECT:+--wandb_project "${WANDB_PROJECT}"} \
+    ${WANDB_GROUP:+--wandb_group "${WANDB_GROUP}-preflight"} \
       | tee "${PREFLIGHT_OUT}/corpus_stats.log"
     echo; echo "--- sanity check ---"
     check_stats "${STATS_JSON}"
