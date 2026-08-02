@@ -58,15 +58,8 @@ criterion:
     - prosody_r2_interp
     - prosody_target_var
     - prosody_frac_cols
-    # drift guard: fraction of utterances with detected padding. A sustained 0
-    # means prosody_denorm_mean/std no longer match the dataset's normalization
-    # and padded frames are contaminating the target -- silently.
-    - prosody_frac_padded
-    # fraction of ranks that had something to score on a diagnostic step. The
-    # r2 gap is compressed by (N-k)/N with k empty ranks, so the true gap is
-    # (r2_model - r2_interp) / prosody_diag_frac. Without this key that
-    # correction is unobtainable and the gap reads biased toward "trivial".
-    - prosody_diag_frac
+    - prosody_frac_padded   # sustained 0 => denorm constants drifted, pad in target
+    - prosody_diag_frac     # true gap = (r2_model - r2_interp) / this, multi-GPU
 
 optimization:
   max_update: 150_000
@@ -106,7 +99,7 @@ model:
   clone_batch: 16
 
   norm_eps: 1e-6
-  layer_decay: 0.65
+  layer_decay: 0.9
   no_decay_blocks: true
 
   min_target_var: 0
@@ -122,32 +115,18 @@ model:
   recon_loss: 1
   d2v_loss: 0
 
-  # emotion-correlated prosody target. 0 = disabled (existing path untouched).
-  # 1.0 is parity with recon=1; the dim-parity factor is applied in the model.
+  # emotion-correlated prosody target. 1.0 = parity with recon=1 (the dim-parity
+  # factor is applied in the model).
   prosody_loss: 1.0
 
-  # corpus, not instance -- measured, not preferred. Contour probe held at 192
-  # dims with normalisation the only variable: corpus 48.69 WA / 47.78 UA vs
-  # instance 40.06 / 38.27. Deleting absolute level costs 8.63 WA, 62% of the
-  # summary-vs-contour gap. See plan/preflight-results.md.
-  #
-  # lambda does NOT transfer between modes -- re-sweep if this ever changes.
+  # corpus beats instance by 8.63 WA (48.69 vs 40.06) -- measured, see
+  # plan/preflight-results.md. lambda does not transfer between modes.
   prosody_norm: corpus
 
-  # From scripts/compute_prosody_corpus_stats.py over the pretraining manifest
-  # (manifests/pretrain/train.tsv): 185,392 utterances, 5,756,053 valid patches
-  # = 255.8 h, i.e. 97.6% of the ~262 h corpus -- the shortfall is what
-  # floor(n_frames/16) and min_sample_size discard. Constants in
-  # $DATA_ROOT/prosody_corpus_stats.json with the manifest and commit recorded.
-  #
-  # These are CORPUS-SPECIFIC: recompute if the pretraining data changes, or the
-  # target is scaled against the wrong distribution with nothing to reveal it.
-  # Order matches DESCRIPTORS = [log_energy, centroid, flux].
-  #
-  # Normalisation is not optional. Raw stds are 3.27 / 20.33 / 2.76, so centroid
-  # (a mel-BIN INDEX, 0-127) would command ~96% of the MSE and the other two
-  # would go effectively unlearned -- while the ablation says log_energy is the
-  # one that matters (-5.28 WA when removed) and centroid the least (+0.38).
+  # [log_energy, centroid, flux] over manifests/pretrain/train.tsv, from
+  # scripts/compute_prosody_corpus_stats.py. Corpus-specific: recompute if the
+  # pretraining data changes. Not optional -- raw stds 3.27/20.33/2.76 would give
+  # centroid (a mel-bin index) ~96% of the MSE.
   prosody_corpus_mean: [0.2880, 64.3173, 15.0033]
   prosody_corpus_std: [3.2706, 20.3331, 2.7568]
 

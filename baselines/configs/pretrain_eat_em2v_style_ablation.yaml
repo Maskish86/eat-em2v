@@ -56,6 +56,12 @@ criterion:
     - dino_center_std
     - dino_teacher_entropy
     - dino_active_prototypes
+    - prosody_r2_model
+    - prosody_r2_interp
+    - prosody_target_var
+    - prosody_frac_cols
+    - prosody_frac_padded   # sustained 0 => denorm constants drifted, pad in target
+    - prosody_diag_frac     # true gap = (r2_model - r2_interp) / this, multi-GPU
 
 optimization:
   max_update: 60_000  # ablation: 150_000 → 60_000
@@ -95,7 +101,7 @@ model:
   clone_batch: 16
 
   norm_eps: 1e-6
-  layer_decay: 0.65
+  layer_decay: 0.9
   no_decay_blocks: true
 
   min_target_var: 0
@@ -110,6 +116,25 @@ model:
   cls_loss: 3
   recon_loss: 1
   d2v_loss: 0
+
+  # emotion-correlated prosody target. 1.0 = parity with recon=1 (the dim-parity
+  # factor is applied in the model).
+  prosody_loss: 1.0
+
+  # corpus beats instance by 8.63 WA (48.69 vs 40.06) -- measured, see
+  # plan/preflight-results.md. lambda does not transfer between modes.
+  prosody_norm: corpus
+
+  # [log_energy, centroid, flux] over manifests/pretrain/train.tsv, from
+  # scripts/compute_prosody_corpus_stats.py. Corpus-specific: recompute if the
+  # pretraining data changes. Not optional -- raw stds 3.27/20.33/2.76 would give
+  # centroid (a mel-bin index) ~96% of the MSE.
+  prosody_corpus_mean: [0.2880, 64.3173, 15.0033]
+  prosody_corpus_std: [3.2706, 20.3331, 2.7568]
+
+  # --ablation is a shorter run (60k/8ep), not a feature ablation: keep this
+  # block identical to pretrain_eat_em2v_style.yaml. Prosody-off arm is an
+  # explicit model.prosody_loss=0 override.
 
   use_dino_head: true
   dino_out_dim: 4096
