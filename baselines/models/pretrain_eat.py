@@ -753,6 +753,53 @@ class Data2VecMultiModel(BaseFairseqModel):
 
         return super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
+    # Modules this project adds on top of upstream EAT. Verified absent from
+    # EAT-base_epoch30_pt.pt (165 keys, none matching dino / prosody /
+    # recon_proj), so a FRESH init from that checkpoint is missing every one of
+    # them. They are randomly initialised by design -- that is a legitimate
+    # absence, not an architecture mismatch.
+    NEW_MODULE_PREFIXES = (
+        "prosody_proj.",
+        "recon_proj.",
+        "student_dino_head.",
+        "teacher_dino_head.",
+        "dino_loss_fn.",
+    )
+
+    def load_state_dict(self, state_dict, strict=True, model_cfg=None, args=None):
+        """Permit this project's added modules to be absent from the checkpoint.
+
+        The pretraining path loads through Trainer.load_checkpoint, which passes
+        strict=True and wraps ANY failure in "Cannot load model parameters from
+        checkpoint ...; please ensure that the architectures match" -- with no
+        indication of which key. That message sent a real run to a dead end.
+
+        Deliberately NOT a blanket strict=False: an unexpected key, or a missing
+        key outside the list above, still fails. Those are the genuine
+        architecture mismatches the original error exists to catch, and silencing
+        them would let a wrong checkpoint train quietly.
+        """
+        if not strict:
+            return super().load_state_dict(state_dict, strict, model_cfg, args)
+
+        result = super().load_state_dict(state_dict, False, model_cfg, args)
+        new = [k for k in result.missing_keys if k.startswith(self.NEW_MODULE_PREFIXES)]
+        genuine = [k for k in result.missing_keys if k not in set(new)]
+        if genuine or result.unexpected_keys:
+            raise RuntimeError(
+                "checkpoint does not match the model:"
+                + (f"\n  missing, and not a module this project adds: {sorted(genuine)}"
+                   if genuine else "")
+                + (f"\n  present in checkpoint but not in the model: {sorted(result.unexpected_keys)}"
+                   if result.unexpected_keys else "")
+            )
+        if new:
+            logger.info(
+                "randomly initialising %d parameter(s) absent from the checkpoint; "
+                "new modules: %s", len(new), sorted({k.split(".")[0] for k in new})
+            )
+        return result
+
     @classmethod
     def build_model(cls, cfg: Data2VecMultiConfig, task=None):
         """Build a new model instance."""
